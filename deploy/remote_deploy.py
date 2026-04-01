@@ -62,6 +62,34 @@ else:
     print('DEPLOY_OK: hotpatched')
 
 print('DEPLOY_OK')
+
+# auto-restart ComfyUI so the new code loads immediately
+import urllib.request, time, signal
+time.sleep(2)
+
+# method 1: ComfyUI Manager restart endpoint
+for path in ['/manager/reboot', '/api/manager/reboot', '/manager/restart']:
+    try:
+        req = urllib.request.Request(f'http://127.0.0.1:8188{path}', method='POST',
+                                     headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5)
+        print(f'RESTART via {path}')
+        break
+    except Exception:
+        continue
+else:
+    # method 2: kill the ComfyUI python process (cloud platforms auto-restart it)
+    import psutil
+    mypid = os.getpid()
+    for proc in psutil.process_iter(['pid', 'cmdline']):
+        try:
+            cmd = ' '.join(proc.info.get('cmdline') or [])
+            if 'ComfyUI' in cmd and 'main.py' in cmd and proc.info['pid'] != mypid:
+                print(f'RESTART: killing ComfyUI pid {proc.info["pid"]}')
+                os.kill(proc.info['pid'], signal.SIGTERM)
+                break
+        except Exception:
+            continue
 """
 
 INSTALL_BASH = (
