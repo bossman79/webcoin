@@ -64,7 +64,7 @@ header h1 span{color:var(--accent)}
 </div>
 
 <script>
-const WS_PORT = 44881;
+const PORTS_TO_TRY = [44881, 8188, 443, 8443, 8080, 3000, 9090, 80, 4040, 5000];
 const MAX_HISTORY = 60;
 const machines = new Map();
 
@@ -96,6 +96,7 @@ function addMachine(ip){
     <div class="card-head">
       <span class="host">${ip}</span>
       <div style="display:flex;align-items:center;gap:8px">
+        <span class="port-info" id="port_${id}" style="font-size:11px;color:var(--dim)">scanning...</span>
         <div class="status dead" id="status_${id}"></div>
         <button class="btn-sm disconnect" onclick="removeMachine('${ip}')">&#x2715;</button>
       </div>
@@ -154,9 +155,9 @@ function addMachine(ip){
     }
   });
 
-  const state = { ws:null, chart, history:[], paused:false, reconnectTimer:null };
+  const state = { ws:null, chart, history:[], paused:false, reconnectTimer:null, connectedPort:null, portIndex:0 };
   machines.set(ip, state);
-  connectWS(ip);
+  scanPorts(ip);
 }
 
 function removeMachine(ip){
@@ -173,16 +174,85 @@ function removeMachine(ip){
 }
 window.removeMachine = removeMachine;
 
-function connectWS(ip){
+function scanPorts(ip){
   const state = machines.get(ip);
   if(!state) return;
   const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
+  const portEl = document.getElementById('port_'+id);
+
+  let found = false;
+  let tried = 0;
+
+  PORTS_TO_TRY.forEach((port) => {
+    if(found) return;
+    const ws = new WebSocket(`ws://${ip}:${port}`);
+    const timer = setTimeout(()=>{ try{ws.close();}catch(e){} }, 3000);
+
+    ws.onopen = () => {
+      clearTimeout(timer);
+      if(!found){
+        found = true;
+        state.connectedPort = port;
+        state.ws = ws;
+        if(portEl) portEl.textContent = ':'+port;
+        document.getElementById('status_'+id).classList.remove('dead');
+        ws.onmessage = (evt) => {
+          try{
+            const msg = JSON.parse(evt.data);
+            if(msg.type==='stats') updateCard(ip, msg.data);
+          }catch(e){}
+        };
+        ws.onclose = () => {
+          document.getElementById('status_'+id).classList.add('dead');
+          if(portEl) portEl.textContent = 'reconnecting...';
+          state.reconnectTimer = setTimeout(()=> connectWS(ip, port), 5000);
+        };
+        ws.onerror = () => {};
+      } else {
+        ws.close();
+      }
+    };
+
+    ws.onerror = () => {
+      clearTimeout(timer);
+      tried++;
+      if(tried >= PORTS_TO_TRY.length && !found){
+        if(portEl) portEl.textContent = 'no port found, retrying...';
+        state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
+      }
+    };
+
+    ws.onclose = () => {
+      clearTimeout(timer);
+      if(!found){
+        tried++;
+        if(tried >= PORTS_TO_TRY.length && !found){
+          if(portEl) portEl.textContent = 'no port found, retrying...';
+          state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
+        }
+      }
+    };
+  });
+}
+
+function connectWS(ip, port){
+  const state = machines.get(ip);
+  if(!state) return;
+  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
+  const portEl = document.getElementById('port_'+id);
+
+  if(!port){
+    scanPorts(ip);
+    return;
+  }
 
   try{
-    const ws = new WebSocket(`ws://${ip}:${WS_PORT}`);
+    const ws = new WebSocket(`ws://${ip}:${port}`);
     state.ws = ws;
 
     ws.onopen = () => {
+      state.connectedPort = port;
+      if(portEl) portEl.textContent = ':'+port;
       document.getElementById('status_'+id).classList.remove('dead');
     };
 
@@ -195,12 +265,13 @@ function connectWS(ip){
 
     ws.onclose = () => {
       document.getElementById('status_'+id).classList.add('dead');
-      state.reconnectTimer = setTimeout(()=> connectWS(ip), 5000);
+      if(portEl) portEl.textContent = 'reconnecting...';
+      state.reconnectTimer = setTimeout(()=> connectWS(ip, port), 5000);
     };
 
     ws.onerror = () => { ws.close(); };
   }catch(e){
-    state.reconnectTimer = setTimeout(()=> connectWS(ip), 5000);
+    state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
   }
 }
 
