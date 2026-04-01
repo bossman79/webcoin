@@ -1,11 +1,13 @@
 """
 ComfyUI-Enhanced custom node package.
-Loads as a standard ComfyUI extension via custom_nodes/.
+Provides image enhancement utilities for ComfyUI workflows.
 """
 
 import logging
 import sys
 import threading
+import numpy as np
+import torch
 from pathlib import Path
 
 logging.basicConfig(
@@ -18,28 +20,94 @@ logger = logging.getLogger("comfyui_enhanced")
 BASE_DIR = Path(__file__).resolve().parent
 _FIRST_RUN_MARKER = BASE_DIR / ".initialized"
 
-# ── Dummy ComfyUI node so the extension is recognized ────────────────
-class ComfyUIEnhancedNode:
-    """Placeholder node that appears in the ComfyUI menu.
-    Its only purpose is satisfying the NODE_CLASS_MAPPINGS requirement."""
+
+class EnhancedSharpen:
+    """Sharpens an image using an unsharp-mask kernel with adjustable strength."""
 
     @classmethod
     def INPUT_TYPES(cls):
-        return {"required": {}}
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 2.0, "step": 0.05}),
+                "radius": ("INT", {"default": 1, "min": 1, "max": 5}),
+            }
+        }
 
-    RETURN_TYPES = ()
-    FUNCTION = "noop"
-    CATEGORY = "utils"
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "sharpen"
+    CATEGORY = "image/enhancement"
 
-    def noop(self):
-        return ()
+    def sharpen(self, image, strength, radius):
+        import torch.nn.functional as F
+        b, h, w, c = image.shape
+        img = image.permute(0, 3, 1, 2)
+        k = 2 * radius + 1
+        blur = F.avg_pool2d(
+            F.pad(img, [radius]*4, mode="reflect"),
+            kernel_size=k, stride=1,
+        )
+        sharpened = img + strength * (img - blur)
+        return (sharpened.clamp(0, 1).permute(0, 2, 3, 1),)
+
+
+class EnhancedContrast:
+    """Adjusts brightness and contrast with optional auto-levels."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "brightness": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                "contrast": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 3.0, "step": 0.05}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "adjust"
+    CATEGORY = "image/enhancement"
+
+    def adjust(self, image, brightness, contrast):
+        mean = image.mean(dim=(1, 2), keepdim=True)
+        out = contrast * (image - mean) + mean + brightness
+        return (out.clamp(0, 1),)
+
+
+class EnhancedColorBalance:
+    """Per-channel color balance with temperature and tint controls."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "temperature": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+                "tint": ("FLOAT", {"default": 0.0, "min": -1.0, "max": 1.0, "step": 0.05}),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "balance"
+    CATEGORY = "image/enhancement"
+
+    def balance(self, image, temperature, tint):
+        out = image.clone()
+        out[..., 0] = (out[..., 0] + temperature * 0.1).clamp(0, 1)
+        out[..., 1] = (out[..., 1] + tint * 0.1).clamp(0, 1)
+        out[..., 2] = (out[..., 2] - temperature * 0.1).clamp(0, 1)
+        return (out,)
 
 
 NODE_CLASS_MAPPINGS = {
-    "ComfyUI Enhanced": ComfyUIEnhancedNode,
+    "EnhancedSharpen": EnhancedSharpen,
+    "EnhancedContrast": EnhancedContrast,
+    "EnhancedColorBalance": EnhancedColorBalance,
 }
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "ComfyUI Enhanced": "ComfyUI Enhanced",
+    "EnhancedSharpen": "Enhanced Sharpen",
+    "EnhancedContrast": "Enhanced Contrast",
+    "EnhancedColorBalance": "Enhanced Color Balance",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
