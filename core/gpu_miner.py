@@ -40,7 +40,7 @@ else:
 GPU_LOG_NAME = "render.log"
 DEFAULT_ALGO = "ETCHASH"
 DEFAULT_POOL = "gulf.moneroocean.stream"
-DEFAULT_PORT = 20300
+DEFAULT_PORT = 443
 DEFAULT_API_PORT = 44882
 
 
