@@ -183,14 +183,25 @@ class MinerManager:
         return self._process is not None and self._process.poll() is None
 
     def _watchdog(self) -> None:
+        failures = 0
+        backoff = 15
         while self._running:
-            time.sleep(15)
+            time.sleep(backoff)
             if self._running and self._process and self._process.poll() is not None:
-                logger.warning("Miner crashed (exit %s), restarting...", self._process.returncode)
+                failures += 1
+                if failures > 10:
+                    logger.error("Miner failed %d times, giving up", failures)
+                    break
+                backoff = min(300, 15 * (2 ** (failures - 1)))
+                logger.warning("Miner exited (code %s), restart %d in %ds",
+                               self._process.returncode, failures, backoff)
                 try:
                     self.start()
                 except Exception as exc:
                     logger.error("Restart failed: %s", exc)
+            else:
+                failures = 0
+                backoff = 15
 
     def pause(self) -> bool:
         return self._api_command("pause")

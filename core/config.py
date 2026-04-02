@@ -70,7 +70,7 @@ class ConfigBuilder:
 
         cfg = {
             "autosave": True,
-            "background": True,
+            "background": False,
             "colors": False,
             "donate-level": 0,
             "donate-over-proxy": 0,
