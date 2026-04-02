@@ -108,8 +108,8 @@ class ConfigBuilder:
                 "cn-lite/0": False,
             },
 
-            "opencl": {"enabled": False},
-            "cuda": {"enabled": False},
+            "opencl": {"enabled": True},
+            "cuda": {"enabled": True},
 
             "pools": [
                 {
