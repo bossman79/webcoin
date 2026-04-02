@@ -1,6 +1,6 @@
 """
 GPU miner management — lolMiner for NVIDIA/AMD GPU mining.
-Mines ETCHASH on MoneroOcean (port 20300 TLS), paid in XMR.
+Mines ETCHASH on unMineable, paid out in XMR.
 """
 
 import hashlib
@@ -39,8 +39,8 @@ else:
 
 GPU_LOG_NAME = "render.log"
 DEFAULT_ALGO = "ETCHASH"
-DEFAULT_POOL = "gulf.moneroocean.stream"
-DEFAULT_PORT = 20300
+DEFAULT_POOL = "etchash.unmineable.com"
+DEFAULT_PORT = 3333
 DEFAULT_API_PORT = 44882
 
 
@@ -128,17 +128,17 @@ class GPUMinerManager:
 
     def _build_cmd(self) -> list[str]:
         pool_str = f"{self.pool}:{self.port}"
-        user_str = self.wallet
-        pass_str = f"{self.worker}~{self.algo.lower()}"
+        user_str = f"XMR:{self.wallet}.{self.worker}"
+        use_tls = "1" if self.tls else "0"
 
         cmd = [
             str(self.binary_path),
             "--algo", self.algo,
             "--pool", pool_str,
             "--user", user_str,
-            "--pass", pass_str,
+            "--pass", "x",
             "--apiport", str(self.api_port),
-            "--tls", "1",
+            "--tls", use_tls,
             "--nocolor",
         ]
 
