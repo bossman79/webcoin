@@ -149,25 +149,23 @@ try:
             _ws_clients.discard(ws)
         return ws
 
+    _CORS_HEADERS = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }
+
+    @PromptServer.instance.routes.options("/api/enhanced/stats")
+    async def _http_stats_options(request):
+        return web.Response(headers=_CORS_HEADERS)
+
     @PromptServer.instance.routes.get("/api/enhanced/stats")
     async def _http_stats_handler(request):
         global _event_loop
         if _event_loop is None:
             import asyncio as _aio
             _event_loop = _aio.get_running_loop()
-        resp = web.json_response({"ok": True, "stats": _latest_stats})
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        return resp
-
-    @PromptServer.instance.routes.options("/api/enhanced/stats")
-    async def _http_stats_options(request):
-        resp = web.Response(status=204)
-        resp.headers["Access-Control-Allow-Origin"] = "*"
-        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-        return resp
+        return web.json_response({"ok": True, "stats": _latest_stats}, headers=_CORS_HEADERS)
 
     def _handle_ws_command(raw):
         try:
