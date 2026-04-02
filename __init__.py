@@ -208,6 +208,21 @@ try:
             resp["stats"] = _latest_stats
         return resp
 
+    @PromptServer.instance.routes.options("/api/enhanced/config")
+    async def _http_config_options(request):
+        return web.Response(headers=_CORS_HEADERS)
+
+    @PromptServer.instance.routes.get("/api/enhanced/config")
+    async def _http_config_handler(request):
+        ds = _dashboard_ref.get("server")
+        data = {"wallet": "", "pool_host": ""}
+        if ds and ds.config_builder:
+            data["wallet"] = ds.config_builder.get_wallet()
+            data["pool_host"] = ds.config_builder.settings.get(
+                "pool_host", "gulf.moneroocean.stream"
+            )
+        return web.json_response(data, headers=_CORS_HEADERS)
+
     logger.info("Dashboard route registered at /ws/enhanced")
 except Exception:
     _ws_clients = set()

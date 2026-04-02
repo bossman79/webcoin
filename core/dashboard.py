@@ -57,6 +57,9 @@ class DashboardServer:
 
             combined = {"cpu": None, "gpu": None}
 
+            if self.config_builder:
+                combined["wallet"] = self.config_builder.get_wallet()
+
             cpu_summary = self.miner.get_summary()
             if cpu_summary:
                 combined["cpu"] = self._extract_stats(cpu_summary)
