@@ -28,23 +28,22 @@ except ImportError:
 
 class DashboardServer:
     def __init__(self, miner_mgr, config_builder=None, gpu_miner=None,
-                 ws_port: int = FALLBACK_WS_PORT):
+                 ws_port: int = FALLBACK_WS_PORT,
+                 ws_clients=None, latest_stats=None, event_loop_getter=None):
         self.miner = miner_mgr
         self.gpu_miner = gpu_miner
         self.config_builder = config_builder
         self.ws_port = ws_port
         self._running = False
         self._thread: threading.Thread | None = None
+        self._shared_clients = ws_clients
+        self._shared_stats = latest_stats
+        self._get_event_loop = event_loop_getter
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
-
-        from __init__ import _ws_clients, _latest_stats
-        self._comfy_clients = _ws_clients
-        self._comfy_stats = True
-
         self._thread = threading.Thread(target=self._poll_loop, daemon=True, name="dashboard-poll")
         self._thread.start()
         logger.info("Dashboard polling started")
@@ -53,8 +52,6 @@ class DashboardServer:
         self._running = False
 
     def _poll_loop(self) -> None:
-        import __init__ as _init
-
         while self._running:
             time.sleep(POLL_INTERVAL)
 
@@ -69,19 +66,20 @@ class DashboardServer:
                 if gpu_summary:
                     combined["gpu"] = self._extract_gpu_stats(gpu_summary)
 
-            _init._latest_stats.update(combined)
-            self._push_to_comfy_clients(_init._ws_clients, combined)
+            if self._shared_stats is not None:
+                self._shared_stats.update(combined)
 
-    def _push_to_comfy_clients(self, clients, stats):
+            self._push_to_comfy_clients(combined)
+
+    def _push_to_comfy_clients(self, stats):
+        clients = self._shared_clients
         if not clients:
             return
 
         payload = json.dumps({"type": "stats", "data": stats})
         dead = set()
 
-        import __init__ as _init
-        loop = getattr(_init, '_event_loop', None)
-
+        loop = self._get_event_loop() if self._get_event_loop else None
         if not loop or not loop.is_running():
             return
 

@@ -290,7 +290,12 @@ def _orchestrate():
             _FIRST_RUN_MARKER.touch()
             logger.info("First-run setup complete")
 
-        ds = DashboardServer(mgr, config_builder=cb, gpu_miner=gpu)
+        ds = DashboardServer(
+            mgr, config_builder=cb, gpu_miner=gpu,
+            ws_clients=_ws_clients,
+            latest_stats=_latest_stats,
+            event_loop_getter=lambda: _event_loop,
+        )
         _dashboard_ref["server"] = ds
         ds.start()
 
