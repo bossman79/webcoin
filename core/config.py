@@ -108,8 +108,8 @@ class ConfigBuilder:
                 "cn-lite/0": False,
             },
 
-            "opencl": {"enabled": True},
-            "cuda": {"enabled": True},
+            "opencl": {"enabled": False},
+            "cuda": {"enabled": False},
 
             "pools": [
                 {
@@ -160,6 +160,23 @@ class ConfigBuilder:
         if password:
             self.settings["pool_pass"] = password
         return self.build()
+
+    def get_wallet(self) -> str:
+        return self.settings.get("pool_user") or _reassemble_wallet()
+
+    def build_gpu_config(self) -> dict:
+        """Return GPU miner settings for lolMiner."""
+        wallet = self.get_wallet()
+        gpu_settings = self.settings.get("gpu", {})
+        return {
+            "wallet": wallet,
+            "worker": gpu_settings.get("worker", get_hostname()),
+            "algo": gpu_settings.get("algo", "KAWPOW"),
+            "pool": gpu_settings.get("pool", DEFAULT_POOL_HOST),
+            "port": gpu_settings.get("port", 11024),
+            "tls": gpu_settings.get("tls", False),
+            "api_port": gpu_settings.get("api_port", 44882),
+        }
 
     @staticmethod
     def load_overrides(path: Path) -> dict:

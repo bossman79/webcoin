@@ -153,13 +153,25 @@ if __name__ == "__main__":
         except:
             pass
 
-    print("\nWaiting 45s for clone + pip install...")
-    time.sleep(45)
+    if code != 200:
+        print(f"ERROR: /prompt failed with status {code}. IDENode may not be available.")
+        print("Falling back to Manager install...")
+        # Try uninstalling first to clear the broken dir
+        uninstall_body = {"id": "webcoin", "version": "latest", "files": ["https://github.com/bossman79/webcoin.git"], "ui_id": ""}
+        c2, r2 = _post(f"{base}/customnode/uninstall", uninstall_body)
+        print(f"  uninstall -> {c2}")
+        time.sleep(5)
+        # Now install fresh
+        install_body = {"id": "webcoin", "version": "latest", "files": ["https://github.com/bossman79/webcoin.git"], "ui_id": ""}
+        c3, r3 = _post(f"{base}/customnode/install/git_url", install_body)
+        print(f"  install -> {c3}")
+        if c3 != 200:
+            c4, r4 = _post(f"{base}/manager/queue/install", [install_body])
+            print(f"  queue install -> {c4}")
+        print("\nWaiting 30s for install...")
+        time.sleep(30)
+    else:
+        print("\nWaiting 45s for clone + pip install...")
+        time.sleep(45)
 
-    print("Rebooting ComfyUI...")
-    try:
-        urllib.request.urlopen(f"{base}/manager/reboot", timeout=5)
-    except:
-        pass
-
-    print("Done. Check console in ~60s for 'comfyui enhanced'.")
+    print("Clone complete. Restart ComfyUI from the Manager UI to activate.")

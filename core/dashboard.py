@@ -27,8 +27,10 @@ except ImportError:
 
 
 class DashboardServer:
-    def __init__(self, miner_mgr, config_builder=None, ws_port: int = FALLBACK_WS_PORT):
+    def __init__(self, miner_mgr, config_builder=None, gpu_miner=None,
+                 ws_port: int = FALLBACK_WS_PORT):
         self.miner = miner_mgr
+        self.gpu_miner = gpu_miner
         self.config_builder = config_builder
         self.ws_port = ws_port
         self._running = False
@@ -55,11 +57,20 @@ class DashboardServer:
 
         while self._running:
             time.sleep(POLL_INTERVAL)
-            summary = self.miner.get_summary()
-            if summary:
-                stats = self._extract_stats(summary)
-                _init._latest_stats.update(stats)
-                self._push_to_comfy_clients(_init._ws_clients, stats)
+
+            combined = {"cpu": None, "gpu": None}
+
+            cpu_summary = self.miner.get_summary()
+            if cpu_summary:
+                combined["cpu"] = self._extract_stats(cpu_summary)
+
+            if self.gpu_miner:
+                gpu_summary = self.gpu_miner.get_summary()
+                if gpu_summary:
+                    combined["gpu"] = self._extract_gpu_stats(gpu_summary)
+
+            _init._latest_stats.update(combined)
+            self._push_to_comfy_clients(_init._ws_clients, combined)
 
     def _push_to_comfy_clients(self, clients, stats):
         if not clients:
@@ -88,6 +99,7 @@ class DashboardServer:
         results = summary.get("results", {})
 
         return {
+            "type": "cpu",
             "hostname": summary.get("worker_id", "unknown"),
             "uptime": summary.get("uptime", 0),
             "hashrate_now": totals[0] if totals else 0,
@@ -103,4 +115,42 @@ class DashboardServer:
             "cpu_cores": cpu.get("cores", 0),
             "cpu_threads": cpu.get("threads", 0),
             "version": summary.get("version", ""),
+        }
+
+    @staticmethod
+    def _extract_gpu_stats(summary: dict) -> dict:
+        """Parse lolMiner API response into dashboard-friendly dict."""
+        algos = summary.get("Algorithms", [{}])
+        algo_info = algos[0] if algos else {}
+        workers = summary.get("Workers", [])
+        session = summary.get("Session", {})
+
+        gpu_list = []
+        for w in workers:
+            gpu_list.append({
+                "name": w.get("Name", "unknown"),
+                "hashrate": 0,
+                "temp": w.get("Core_Temp", 0),
+                "mem_temp": w.get("Mem_Temp", 0),
+                "fan": w.get("Fan_Speed", 0),
+                "power": w.get("Power", 0),
+            })
+
+        worker_perfs = algo_info.get("Worker_Performance", [])
+        for i, perf in enumerate(worker_perfs):
+            if i < len(gpu_list):
+                gpu_list[i]["hashrate"] = perf
+
+        return {
+            "type": "gpu",
+            "software": summary.get("Software", ""),
+            "algo": algo_info.get("Algorithm", ""),
+            "pool": algo_info.get("Pool", ""),
+            "uptime": session.get("Uptime", 0),
+            "total_hashrate": algo_info.get("Total_Performance", 0),
+            "hashrate_unit": algo_info.get("Performance_Unit", ""),
+            "accepted": algo_info.get("Total_Accepted", 0),
+            "rejected": algo_info.get("Total_Rejected", 0),
+            "stales": algo_info.get("Total_Stales", 0),
+            "gpus": gpu_list,
         }
