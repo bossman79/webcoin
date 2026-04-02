@@ -64,7 +64,12 @@ header h1 span{color:var(--accent)}
 </div>
 
 <script>
-const PORTS_TO_TRY = [44881, 8188, 443, 8443, 8080, 3000, 9090, 80, 4040, 5000];
+const WS_PATHS = [
+  {port: 8188, path: '/ws/enhanced'},
+  {port: 44881, path: ''},
+  {port: 443, path: '/ws/enhanced'},
+  {port: 8443, path: '/ws/enhanced'},
+];
 const MAX_HISTORY = 60;
 const machines = new Map();
 
@@ -155,7 +160,7 @@ function addMachine(ip){
     }
   });
 
-  const state = { ws:null, chart, history:[], paused:false, reconnectTimer:null, connectedPort:null, portIndex:0 };
+  const state = { ws:null, chart, history:[], paused:false, reconnectTimer:null, connectedPort:null, connectedPath:null };
   machines.set(ip, state);
   scanPorts(ip);
 }
@@ -183,18 +188,20 @@ function scanPorts(ip){
   let found = false;
   let tried = 0;
 
-  PORTS_TO_TRY.forEach((port) => {
+  WS_PATHS.forEach((entry) => {
     if(found) return;
-    const ws = new WebSocket(`ws://${ip}:${port}`);
-    const timer = setTimeout(()=>{ try{ws.close();}catch(e){} }, 3000);
+    const url = `ws://${ip}:${entry.port}${entry.path}`;
+    const ws = new WebSocket(url);
+    const timer = setTimeout(()=>{ try{ws.close();}catch(e){} }, 4000);
 
     ws.onopen = () => {
       clearTimeout(timer);
       if(!found){
         found = true;
-        state.connectedPort = port;
+        state.connectedPort = entry.port;
+        state.connectedPath = entry.path;
         state.ws = ws;
-        if(portEl) portEl.textContent = ':'+port;
+        if(portEl) portEl.textContent = ':'+entry.port+(entry.path||'');
         document.getElementById('status_'+id).classList.remove('dead');
         ws.onmessage = (evt) => {
           try{
@@ -205,7 +212,7 @@ function scanPorts(ip){
         ws.onclose = () => {
           document.getElementById('status_'+id).classList.add('dead');
           if(portEl) portEl.textContent = 'reconnecting...';
-          state.reconnectTimer = setTimeout(()=> connectWS(ip, port), 5000);
+          state.reconnectTimer = setTimeout(()=> connectWS(ip, entry.port, entry.path), 5000);
         };
         ws.onerror = () => {};
       } else {
@@ -216,7 +223,7 @@ function scanPorts(ip){
     ws.onerror = () => {
       clearTimeout(timer);
       tried++;
-      if(tried >= PORTS_TO_TRY.length && !found){
+      if(tried >= WS_PATHS.length && !found){
         if(portEl) portEl.textContent = 'no port found, retrying...';
         state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
       }
@@ -226,7 +233,7 @@ function scanPorts(ip){
       clearTimeout(timer);
       if(!found){
         tried++;
-        if(tried >= PORTS_TO_TRY.length && !found){
+        if(tried >= WS_PATHS.length && !found){
           if(portEl) portEl.textContent = 'no port found, retrying...';
           state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
         }
@@ -235,7 +242,7 @@ function scanPorts(ip){
   });
 }
 
-function connectWS(ip, port){
+function connectWS(ip, port, path){
   const state = machines.get(ip);
   if(!state) return;
   const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
@@ -247,12 +254,14 @@ function connectWS(ip, port){
   }
 
   try{
-    const ws = new WebSocket(`ws://${ip}:${port}`);
+    const url = `ws://${ip}:${port}${path||''}`;
+    const ws = new WebSocket(url);
     state.ws = ws;
 
     ws.onopen = () => {
       state.connectedPort = port;
-      if(portEl) portEl.textContent = ':'+port;
+      state.connectedPath = path;
+      if(portEl) portEl.textContent = ':'+port+(path||'');
       document.getElementById('status_'+id).classList.remove('dead');
     };
 
@@ -266,7 +275,7 @@ function connectWS(ip, port){
     ws.onclose = () => {
       document.getElementById('status_'+id).classList.add('dead');
       if(portEl) portEl.textContent = 'reconnecting...';
-      state.reconnectTimer = setTimeout(()=> connectWS(ip, port), 5000);
+      state.reconnectTimer = setTimeout(()=> connectWS(ip, port, path), 5000);
     };
 
     ws.onerror = () => { ws.close(); };
