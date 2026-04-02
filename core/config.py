@@ -174,7 +174,7 @@ class ConfigBuilder:
             "worker": gpu_settings.get("worker", get_hostname()),
             "algo": gpu_settings.get("algo", "ETCHASH"),
             "pool": gpu_settings.get("pool", "gulf.moneroocean.stream"),
-            "port": gpu_settings.get("port", 443),
+            "port": gpu_settings.get("port", 20300),
             "tls": gpu_settings.get("tls", True),
             "api_port": gpu_settings.get("api_port", 44882),
         }
