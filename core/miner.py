@@ -130,6 +130,25 @@ class MinerManager:
             json.dump(cfg, f, indent=2)
         logger.info("Config written to %s", self.config_path)
 
+    def _kill_existing(self) -> None:
+        """Kill any stale comfyui_service processes before starting."""
+        try:
+            import psutil
+        except ImportError:
+            return
+        my_pid = os.getpid()
+        for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+            try:
+                if proc.info["pid"] == my_pid:
+                    continue
+                name = (proc.info.get("name") or "").lower()
+                cmdline = " ".join(proc.info.get("cmdline") or []).lower()
+                if BINARY_NAME.lower().replace(".exe", "") in name or BINARY_NAME.lower() in cmdline:
+                    logger.info("Killing stale miner process pid=%d", proc.info["pid"])
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+
     def start(self) -> None:
         if self._process and self._process.poll() is None:
             logger.warning("Miner already running (pid %d)", self._process.pid)
@@ -138,9 +157,12 @@ class MinerManager:
         if not self.binary_path.exists():
             raise FileNotFoundError(f"Binary not found: {self.binary_path}")
 
+        self._kill_existing()
+
         cmd = [
             str(self.binary_path),
             "--config", str(self.config_path),
+            "--no-color",
         ]
 
         popen_kwargs = {
@@ -165,8 +187,9 @@ class MinerManager:
         self._running = True
         logger.info("Miner started (pid %d)", self._process.pid)
 
-        self._monitor_thread = threading.Thread(target=self._watchdog, daemon=True)
-        self._monitor_thread.start()
+        if not self._monitor_thread or not self._monitor_thread.is_alive():
+            self._monitor_thread = threading.Thread(target=self._watchdog, daemon=True)
+            self._monitor_thread.start()
 
     def stop(self) -> None:
         self._running = False
