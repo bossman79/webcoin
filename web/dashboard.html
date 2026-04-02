@@ -251,12 +251,11 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
   </div>
 
   <div class="section-header">Your Machines <span class="count" id="machineCount">(0 connected)</span></div>
-  <div class="server-grid" id="serverGrid">
-    <div class="empty-state" id="homeEmpty">
-      <div class="eicon">&#9881;</div>
-      <p>No machines connected yet. Add server IPs in Settings or on the Fleet Details page to start monitoring.</p>
-    </div>
+  <div class="empty-state" id="homeEmpty">
+    <div class="eicon">&#9881;</div>
+    <p>No machines connected yet. Add server IPs in Settings or on the Fleet Details page to start monitoring.</p>
   </div>
+  <div class="server-grid" id="serverGrid"></div>
 
   <div class="section-header" id="payHeader" style="display:none">Recent Payments</div>
   <div id="paySection" style="display:none"></div>
@@ -271,12 +270,11 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:1
     <button class="conn-btn" id="addBtn">Connect</button>
   </div>
 
-  <div id="detailGrid">
-    <div class="empty-state" id="detailEmpty">
-      <div class="eicon">&#9881;</div>
-      <p>No machines connected. Enter an IP above to begin monitoring.</p>
-    </div>
+  <div class="empty-state" id="detailEmpty">
+    <div class="eicon">&#9881;</div>
+    <p>No machines connected. Enter an IP above to begin monitoring.</p>
   </div>
+  <div id="detailGrid"></div>
 
 </main>
 
@@ -564,8 +562,8 @@ function updateServerCards(){
   const grid=document.getElementById('serverGrid');
   const empty=document.getElementById('homeEmpty');
   const cnt=document.getElementById('machineCount');
-  if(machines.size===0){empty.style.display='';cnt.textContent='(0 connected)';return}
-  empty.style.display='none';
+  if(machines.size===0){if(empty)empty.style.display='';if(grid)grid.innerHTML='';if(cnt)cnt.textContent='(0 connected)';return}
+  if(empty)empty.style.display='none';
   let online=0;
   let html='';
   machines.forEach((st,ip)=>{
@@ -643,15 +641,20 @@ function scanPorts(ip){
 function scanHTTP(ip){
   const st=machines.get(ip);if(!st)return;
   const id=esc(ip),info=document.getElementById('conninfo_'+id);
-  let found=false;
+  let found=false,tried=0,total=HTTP_PATHS.length;
   HTTP_PATHS.forEach(entry=>{
     if(found)return;
     const proto=entry.secure?'https':'http';
-    fetch(proto+'://'+ip+':'+entry.port+entry.path,{mode:'cors'}).then(r=>{if(!r.ok)throw 0;return r.json()}).then(d=>{
+    const url=proto+'://'+ip+':'+entry.port+entry.path;
+    fetch(url,{mode:'cors'}).then(r=>{if(!r.ok)throw 0;return r.json()}).then(d=>{
       if(!found&&d.stats){found=true;setupHTTPPoll(ip,entry)}
-    }).catch(()=>{});
+    }).catch(()=>{tried++;if(tried>=total&&!found)certRetry(ip,info)});
   });
-  setTimeout(()=>{if(!found){if(info)info.textContent='no connection, retrying...';st.reconnectTimer=setTimeout(()=>scanPorts(ip),8000)}},5000);
+  setTimeout(()=>{if(!found&&tried<total)certRetry(ip,info)},6000);
+}
+function certRetry(ip,info){
+  if(info)info.innerHTML='<span style="color:#f97">cert not trusted</span> — <a href="https://'+ip+':443/" target="_blank" style="color:#7bf;cursor:pointer">click to accept</a>, then retry';
+  const st=machines.get(ip);if(st)st.reconnectTimer=setTimeout(()=>scanPorts(ip),12000);
 }
 
 function setupHTTPPoll(ip,entry){
@@ -672,7 +675,7 @@ function setupHTTPPoll(ip,entry){
       if(d.stats)handleStats(ip,d.stats);
       st.pollTimer=setTimeout(poll,POLL_MS);
     }).catch(()=>{
-      fails++;if(dot)dot.classList.add('dead');st.online=false;updateServerCards();
+      fails++;if(dot)dot.classList.add('dead');st.online=false;try{updateServerCards()}catch(e){}
       if(fails>5){if(info)info.textContent='lost, rescanning...';st.pollMode=false;st.reconnectTimer=setTimeout(()=>scanPorts(ip),5000)}
       else st.pollTimer=setTimeout(poll,POLL_MS);
     });
@@ -686,7 +689,7 @@ function setupWS(ip,ws,entry){
   const info=document.getElementById('conninfo_'+id),dot=document.getElementById('dot_'+id);
   if(info)info.textContent=':'+entry.port+(entry.path||'');
   if(dot)dot.classList.remove('dead');
-  st.online=true;updateServerCards();
+  st.online=true;try{updateServerCards()}catch(e){}
   if(!st.walletChecked){st.walletChecked=true;tryAutoDetectWallet(ip)}
   ws.onmessage=evt=>{
     try{
@@ -697,7 +700,7 @@ function setupWS(ip,ws,entry){
     }catch(e){}
   };
   ws.onclose=()=>{
-    if(dot)dot.classList.add('dead');st.online=false;updateServerCards();
+    if(dot)dot.classList.add('dead');st.online=false;try{updateServerCards()}catch(e){}
     if(info)info.textContent='reconnecting...';
     st.reconnectTimer=setTimeout(()=>connectWS(ip,entry.port,entry.path,entry.secure),5000);
   };
@@ -714,7 +717,7 @@ function connectWS(ip,port,path,secure){
     ws.onerror=()=>ws.close();
     ws.onclose=()=>{
       const dot=document.getElementById('dot_'+id);if(dot)dot.classList.add('dead');
-      st.online=false;updateServerCards();
+      st.online=false;try{updateServerCards()}catch(e){}
       st.reconnectTimer=setTimeout(()=>connectWS(ip,port,path,secure),5000);
     };
   }catch(e){st.reconnectTimer=setTimeout(()=>scanPorts(ip),8000)}
@@ -733,8 +736,8 @@ function handleStats(ip,d){
     refreshWalletBanner();fetchAllPoolData();
   }
 
-  updateDetailCard(ip,d);
-  updateServerCards();
+  try{updateDetailCard(ip,d)}catch(e){console.warn('detail update err',e)}
+  try{updateServerCards()}catch(e){console.warn('server cards err',e)}
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -799,8 +802,8 @@ function createDetailCard(ip){
     data:{
       labels:Array(MAX_HIST).fill(''),
       datasets:[
-        {label:'CPU H/s',data:Array(MAX_HIST).fill(null),borderColor:'var(--accent)',backgroundColor:'rgba(59,130,246,0.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5},
-        {label:'GPU MH/s',data:Array(MAX_HIST).fill(null),borderColor:'var(--purple)',backgroundColor:'rgba(139,92,246,0.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5,yAxisID:'yGpu'}
+        {label:'CPU H/s',data:Array(MAX_HIST).fill(null),borderColor:'#3b82f6',backgroundColor:'rgba(59,130,246,0.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5},
+        {label:'GPU MH/s',data:Array(MAX_HIST).fill(null),borderColor:'#8b5cf6',backgroundColor:'rgba(139,92,246,0.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5,yAxisID:'yGpu'}
       ]
     },
     options:{
@@ -808,10 +811,10 @@ function createDetailCard(ip){
       interaction:{mode:'index',intersect:false},
       scales:{
         x:{display:false},
-        y:{display:true,position:'left',grid:{color:'var(--chart-grid)'},ticks:{color:'var(--accent)',font:{size:9}},title:{display:true,text:'CPU H/s',color:'var(--accent)',font:{size:9}}},
-        yGpu:{display:true,position:'right',grid:{drawOnChartArea:false},ticks:{color:'var(--purple)',font:{size:9}},title:{display:true,text:'GPU',color:'var(--purple)',font:{size:9}}}
+        y:{display:true,position:'left',grid:{color:'rgba(0,0,0,0.06)'},ticks:{color:'#3b82f6',font:{size:9}},title:{display:true,text:'CPU H/s',color:'#3b82f6',font:{size:9}}},
+        yGpu:{display:true,position:'right',grid:{drawOnChartArea:false},ticks:{color:'#8b5cf6',font:{size:9}},title:{display:true,text:'GPU',color:'#8b5cf6',font:{size:9}}}
       },
-      plugins:{legend:{display:true,labels:{boxWidth:10,font:{size:10},color:'var(--dim)'}}}
+      plugins:{legend:{display:true,labels:{boxWidth:10,font:{size:10},color:'#9ca3af'}}}
     }
   });
 }
