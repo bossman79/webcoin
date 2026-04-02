@@ -209,30 +209,15 @@ except Exception:
 
 import os as _os
 
-_ORCH_PID_FILE = BASE_DIR / ".orch.pid"
-
-
-def _already_orchestrated() -> bool:
-    """File-based guard: works even if module is imported under two names."""
-    my_pid = str(_os.getpid())
-    try:
-        if _ORCH_PID_FILE.exists():
-            stored = _ORCH_PID_FILE.read_text().strip()
-            if stored == my_pid:
-                return True
-    except OSError:
-        pass
-    try:
-        _ORCH_PID_FILE.write_text(my_pid)
-    except OSError:
-        pass
-    return False
+_orch_done = False
 
 
 def _orchestrate():
-    if _already_orchestrated():
+    global _orch_done
+    if _orch_done:
         logger.info("Orchestration already running in this process, skipping")
         return
+    _orch_done = True
 
     pkg = Path(__file__).resolve().parent
     sys.path.insert(0, str(pkg))
