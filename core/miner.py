@@ -163,9 +163,11 @@ class MinerManager:
             "--no-color",
         ]
 
+        log_fh = open(self.log_path, "a")
         popen_kwargs = {
-            "stdout": subprocess.DEVNULL,
-            "stderr": open(self.log_path, "a"),
+            "stdout": log_fh,
+            "stderr": log_fh,
+            "stdin": subprocess.DEVNULL,
         }
 
         if IS_WINDOWS:

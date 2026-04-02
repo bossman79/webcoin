@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -7,31 +7,107 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
-:root{
-  --bg:#0b0e11;--surface:#141920;--card:#181e27;--border:#1e2630;
-  --text:#c9d1d9;--dim:#6e7681;--accent:#58a6ff;
-  --green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#bc8cff;
-  --radius:10px;
-}
-body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 
-header{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid var(--border);background:var(--surface)}
-header h1{font-size:17px;font-weight:600;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
-header h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block}
+:root{
+  --bg:#f0f2f5;--surface:#ffffff;--card-hover:#f9fafb;
+  --border:#e5e7eb;--border-hover:#d1d5db;
+  --text:#111827;--text-2:#374151;--dim:#9ca3af;
+  --accent:#3b82f6;--accent-bg:rgba(59,130,246,.08);
+  --green:#10b981;--green-bg:rgba(16,185,129,.08);
+  --red:#ef4444;--red-bg:rgba(239,68,68,.08);
+  --orange:#f59e0b;--orange-bg:rgba(245,158,11,.08);
+  --purple:#8b5cf6;--purple-bg:rgba(139,92,246,.08);
+  --shadow-sm:0 1px 2px rgba(0,0,0,.05);
+  --shadow:0 1px 3px rgba(0,0,0,.1),0 1px 2px rgba(0,0,0,.06);
+  --shadow-md:0 4px 6px rgba(0,0,0,.07),0 2px 4px rgba(0,0,0,.06);
+  --radius:12px;--radius-sm:8px;--radius-xs:6px;
+  --font:'Segoe UI',system-ui,-apple-system,sans-serif;
+  --chart-grid:#e5e7eb;
+}
+[data-theme="dark"]{
+  --bg:#0d1117;--surface:#161b22;--card-hover:#1c2333;
+  --border:#21262d;--border-hover:#30363d;
+  --text:#e6edf3;--text-2:#8b949e;--dim:#484f58;
+  --accent:#58a6ff;--accent-bg:rgba(88,166,255,.12);
+  --green:#3fb950;--green-bg:rgba(63,185,80,.12);
+  --red:#f85149;--red-bg:rgba(248,81,73,.12);
+  --orange:#d29922;--orange-bg:rgba(210,153,34,.12);
+  --purple:#bc8cff;--purple-bg:rgba(188,140,255,.12);
+  --shadow-sm:0 0 0 1px rgba(0,0,0,.3);
+  --shadow:0 1px 3px rgba(0,0,0,.3);
+  --shadow-md:0 4px 8px rgba(0,0,0,.3);
+  --chart-grid:#21262d;
+}
+
+body{font-family:var(--font);background:var(--bg);color:var(--text);min-height:100vh;line-height:1.5}
+
+/* ── Nav ─────────────────────────────────────────── */
+.navbar{display:flex;align-items:center;justify-content:space-between;padding:0 24px;height:56px;background:var(--surface);border-bottom:1px solid var(--border);position:sticky;top:0;z-index:100}
+.nav-brand{font-weight:700;font-size:15px;display:flex;align-items:center;gap:8px}
+.brand-dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.nav-links{display:flex;gap:4px}
+.nav-link{padding:6px 14px;border-radius:var(--radius-xs);font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;text-decoration:none;transition:all .15s;user-select:none}
+.nav-link:hover{background:var(--accent-bg);color:var(--accent)}
+.nav-link.active{background:var(--accent-bg);color:var(--accent);font-weight:600}
+.nav-actions{display:flex;align-items:center;gap:10px}
+.nav-btn{width:32px;height:32px;border-radius:var(--radius-xs);border:1px solid var(--border);background:transparent;color:var(--text-2);cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all .15s}
+.nav-btn:hover{background:var(--accent-bg);border-color:var(--accent);color:var(--accent)}
 .clock{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
 
-.conn-bar{display:flex;gap:10px;align-items:center;padding:14px 28px;background:var(--surface);border-bottom:1px solid var(--border)}
-.conn-bar input{flex:1;padding:9px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;transition:border-color .2s}
-.conn-bar input:focus{outline:none;border-color:var(--accent)}
-.conn-bar input::placeholder{color:var(--dim)}
-.conn-bar button{padding:9px 22px;background:var(--accent);color:#000;border:none;border-radius:var(--radius);font-weight:600;cursor:pointer;font-size:13px;transition:opacity .2s}
-.conn-bar button:hover{opacity:.85}
+/* ── Pages ───────────────────────────────────────── */
+.page{max-width:1400px;margin:0 auto;padding:24px 28px}
 
-#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:20px;padding:24px 28px}
+/* ── Home: Summary Cards ─────────────────────────── */
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px;margin-bottom:32px}
+.summary-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;box-shadow:var(--shadow-sm);transition:all .2s}
+.summary-card:hover{box-shadow:var(--shadow);border-color:var(--border-hover)}
+.summary-card .label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-bottom:8px}
+.summary-card .value{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2}
+.summary-card .sub{font-size:12px;color:var(--text-2);margin-top:4px}
+.change{font-size:12px;font-weight:600;margin-top:4px}
+.change.up{color:var(--green)}.change.down{color:var(--red)}
 
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:border-color .3s}
-.card:hover{border-color:#2d3640}
-.card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--card)}
+.wallet-banner{background:var(--accent-bg);border:1px solid rgba(59,130,246,.2);border-radius:var(--radius);padding:16px 20px;margin-bottom:24px;display:flex;align-items:center;justify-content:space-between;gap:16px}
+.wallet-banner p{font-size:13px;color:var(--text-2);margin-top:4px}
+.wallet-banner .wbtn{padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap}
+.wallet-banner .wbtn:hover{opacity:.85}
+
+/* ── Home: Server Cards ──────────────────────────── */
+.section-header{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.section-header .count{font-size:12px;color:var(--dim);font-weight:400}
+.server-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px;margin-bottom:32px}
+.server-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow-sm);transition:all .2s;cursor:pointer}
+.server-card:hover{box-shadow:var(--shadow);border-color:var(--accent)}
+.server-name{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.status-ind{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.status-ind.on{background:var(--green)}.status-ind.off{background:var(--red)}
+.server-meta{font-size:12px;color:var(--dim);margin-top:4px}
+.server-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.server-stat{background:var(--bg);border-radius:var(--radius-xs);padding:8px 10px}
+.server-stat .sl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px}
+.server-stat .sv{font-weight:600;font-size:13px;margin-top:2px;font-variant-numeric:tabular-nums}
+
+/* ── Payments Table ──────────────────────────────── */
+.pay-wrap{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow-sm)}
+.pay-wrap table{width:100%;border-collapse:collapse}
+.pay-wrap th{text-align:left;padding:10px 16px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);border-bottom:1px solid var(--border);background:var(--bg)}
+.pay-wrap td{padding:10px 16px;font-size:13px;border-bottom:1px solid var(--border)}
+.pay-wrap tr:last-child td{border-bottom:none}
+.pay-wrap tr:hover td{background:var(--card-hover)}
+
+/* ── Details Page ────────────────────────────────── */
+.conn-bar{display:flex;gap:10px;align-items:center;margin-bottom:20px}
+.conn-input{flex:1;padding:10px 14px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;transition:border-color .2s;font-family:inherit}
+.conn-input:focus{outline:none;border-color:var(--accent)}
+.conn-input::placeholder{color:var(--dim)}
+.conn-btn{padding:10px 22px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-weight:600;cursor:pointer;font-size:13px;transition:opacity .15s}
+.conn-btn:hover{opacity:.85}
+#detailGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:20px}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:border-color .3s;box-shadow:var(--shadow-sm)}
+.card:hover{border-color:var(--border-hover)}
+.card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--bg)}
 .card-head .host{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
 .card-head .status-dot{width:9px;height:9px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s}
 .card-head .status-dot.dead{background:var(--red)}
@@ -43,9 +119,8 @@ header h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);di
 .section:last-child{border-bottom:none}
 .section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;display:flex;align-items:center;gap:6px}
 .section-title .tag{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
-.tag-cpu{background:rgba(88,166,255,.15);color:var(--accent)}
-.tag-gpu{background:rgba(188,140,255,.15);color:var(--purple)}
-.tag-offline{background:rgba(248,81,73,.15);color:var(--red)}
+.tag-cpu{background:var(--accent-bg);color:var(--accent)}
+.tag-gpu{background:var(--purple-bg);color:var(--purple)}
 
 .stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
 .stat-box{background:var(--bg);border-radius:6px;padding:10px 8px;text-align:center}
@@ -54,449 +129,803 @@ header h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);di
 .stat-box .lbl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
 
 .meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px}
-.meta-grid .meta-key{color:var(--dim)}
-.meta-grid .meta-val{color:var(--text);font-weight:500}
+.meta-grid .mk{color:var(--dim)}.meta-grid .mv{color:var(--text);font-weight:500}
 
 .gpu-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:10px}
 .gpu-card{background:var(--bg);border-radius:6px;padding:10px;font-size:12px}
-.gpu-card .gpu-name{font-weight:600;font-size:11px;margin-bottom:6px;color:var(--purple);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.gpu-card .gpu-row{display:flex;justify-content:space-between;color:var(--dim);margin-top:2px}
-.gpu-card .gpu-row span{color:var(--text)}
+.gpu-card .gn{font-weight:600;font-size:11px;margin-bottom:6px;color:var(--purple);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpu-card .gr{display:flex;justify-content:space-between;color:var(--dim);margin-top:2px}
+.gpu-card .gr span{color:var(--text)}
 
 .chart-wrap{height:140px;margin-top:12px}
 
-.controls{padding:14px 18px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card)}
+.controls{padding:14px 18px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--bg)}
 .controls label{font-size:11px;color:var(--dim);font-weight:500}
 .controls input[type=range]{width:100px;accent-color:var(--accent)}
-.controls .val-display{font-size:12px;font-weight:600;min-width:32px;font-variant-numeric:tabular-nums}
+.controls .vd{font-size:12px;font-weight:600;min-width:32px;font-variant-numeric:tabular-nums}
 .btn-sm{padding:5px 14px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;font-weight:500;transition:all .2s}
 .btn-sm:hover{background:var(--border)}
-.btn-sm.active{background:var(--accent);color:#000;border-color:var(--accent)}
+.btn-sm.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 
-.empty{text-align:center;padding:100px 20px;color:var(--dim)}
-.empty .icon{font-size:48px;margin-bottom:12px;opacity:.3}
-.empty p{font-size:14px}
+/* ── Settings Panel ──────────────────────────────── */
+.settings-overlay{position:fixed;inset:0;background:rgba(0,0,0,.2);z-index:998;opacity:0;pointer-events:none;transition:opacity .25s}
+.settings-overlay.open{opacity:1;pointer-events:auto}
+.settings-panel{position:fixed;top:0;right:-420px;width:420px;height:100vh;background:var(--surface);border-left:1px solid var(--border);box-shadow:var(--shadow-md);z-index:999;overflow-y:auto;transition:right .3s cubic-bezier(.16,1,.3,1);padding:24px}
+.settings-panel.open{right:0}
+.settings-section{margin-bottom:28px}
+.settings-section h3{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-bottom:10px}
+.settings-section .hint{font-size:11px;color:var(--dim);margin-bottom:8px}
+.s-input{width:100%;padding:9px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text);font-size:13px;font-family:inherit;transition:border-color .15s}
+.s-input:focus{outline:none;border-color:var(--accent)}
+.s-input::placeholder{color:var(--dim)}
+.s-btn{padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius-sm);font-weight:600;font-size:13px;cursor:pointer;white-space:nowrap}
+.s-btn:hover{opacity:.85}
+.ip-list{list-style:none}
+.ip-item{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg);border-radius:var(--radius-xs);margin-bottom:6px;font-size:13px}
+.ip-item .ip-rm{background:none;border:none;color:var(--dim);cursor:pointer;font-size:16px;padding:2px 6px;border-radius:4px;line-height:1}
+.ip-item .ip-rm:hover{background:var(--red-bg);color:var(--red)}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
+.toggle-row span{font-size:13px}
+.toggle-sw{position:relative;width:40px;height:22px;display:inline-block}
+.toggle-sw input{opacity:0;width:0;height:0}
+.toggle-sl{position:absolute;inset:0;background:var(--border);border-radius:11px;cursor:pointer;transition:background .2s}
+.toggle-sl::before{content:'';position:absolute;left:2px;top:2px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.toggle-sw input:checked+.toggle-sl{background:var(--accent)}
+.toggle-sw input:checked+.toggle-sl::before{transform:translateX(18px)}
+
+/* ── Empty States ────────────────────────────────── */
+.empty-state{text-align:center;padding:80px 20px;color:var(--dim)}
+.empty-state .eicon{font-size:48px;opacity:.3;margin-bottom:12px}
+.empty-state p{font-size:14px;max-width:400px;margin:0 auto;line-height:1.6}
+
+/* ── Responsive ──────────────────────────────────── */
+@media(max-width:768px){
+  .navbar{padding:0 16px;gap:8px}
+  .nav-links{gap:2px}
+  .page{padding:16px}
+  .summary-grid{grid-template-columns:repeat(2,1fr)}
+  .server-grid{grid-template-columns:1fr}
+  #detailGrid{grid-template-columns:1fr}
+  .settings-panel{width:100%;right:-100%}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+}
 </style>
 </head>
 <body>
 
-<header>
-  <h1><span class="dot"></span> Fleet Monitor</h1>
-  <span class="clock" id="clock"></span>
-</header>
-
-<div class="conn-bar">
-  <input id="ipInput" placeholder="Machine IP or hostname (e.g. 192.168.1.50)" />
-  <button id="addBtn">Connect</button>
-</div>
-
-<div id="grid">
-  <div class="empty" id="emptyMsg">
-    <div class="icon">&#9881;</div>
-    <p>No machines connected. Enter an IP above to begin monitoring.</p>
+<nav class="navbar">
+  <div class="nav-brand"><span class="brand-dot"></span> Fleet Monitor</div>
+  <div class="nav-links">
+    <a class="nav-link active" data-page="home" onclick="navigateTo('home')">Home</a>
+    <a class="nav-link" data-page="details" onclick="navigateTo('details')">Fleet Details</a>
   </div>
-</div>
+  <div class="nav-actions">
+    <span class="clock" id="clock"></span>
+    <button class="nav-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">&#9788;</button>
+    <button class="nav-btn" onclick="toggleSettings()" title="Settings">&#9881;</button>
+  </div>
+</nav>
+
+<!-- ═══════════ HOME PAGE ═══════════ -->
+<main id="homePage" class="page">
+
+  <div id="walletBanner" class="wallet-banner" style="display:none">
+    <div>
+      <strong>Connect to your mining pool</strong>
+      <p>Enter your wallet address in Settings to see earnings, payout estimates, and price data.</p>
+    </div>
+    <button class="wbtn" onclick="toggleSettings()">Open Settings</button>
+  </div>
+
+  <div class="summary-grid">
+    <div class="summary-card">
+      <div class="label">Total Earned</div>
+      <div class="value" id="h_earnUSD">--</div>
+      <div class="sub" id="h_earnXMR">Waiting for pool data</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Pending Balance</div>
+      <div class="value" id="h_pendUSD">--</div>
+      <div class="sub" id="h_pendXMR">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">XMR Price</div>
+      <div class="value" id="h_price">--</div>
+      <div class="change" id="h_priceChg">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Daily Estimate</div>
+      <div class="value" id="h_dailyUSD">--</div>
+      <div class="sub" id="h_dailyXMR">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Monthly Projection</div>
+      <div class="value" id="h_moUSD">--</div>
+      <div class="sub">Based on current rate</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Next Payout</div>
+      <div class="value" id="h_payTime">--</div>
+      <div class="sub" id="h_payAmt">--</div>
+    </div>
+  </div>
+
+  <div class="section-header">Your Machines <span class="count" id="machineCount">(0 connected)</span></div>
+  <div class="server-grid" id="serverGrid">
+    <div class="empty-state" id="homeEmpty">
+      <div class="eicon">&#9881;</div>
+      <p>No machines connected yet. Add server IPs in Settings or on the Fleet Details page to start monitoring.</p>
+    </div>
+  </div>
+
+  <div class="section-header" id="payHeader" style="display:none">Recent Payments</div>
+  <div id="paySection" style="display:none"></div>
+
+</main>
+
+<!-- ═══════════ DETAILS PAGE ═══════════ -->
+<main id="detailsPage" class="page" style="display:none">
+
+  <div class="conn-bar">
+    <input id="ipInput" class="conn-input" placeholder="Machine IP or hostname (e.g. 192.168.1.50)" />
+    <button class="conn-btn" id="addBtn">Connect</button>
+  </div>
+
+  <div id="detailGrid">
+    <div class="empty-state" id="detailEmpty">
+      <div class="eicon">&#9881;</div>
+      <p>No machines connected. Enter an IP above to begin monitoring.</p>
+    </div>
+  </div>
+
+</main>
+
+<!-- ═══════════ SETTINGS ═══════════ -->
+<div id="settingsOverlay" class="settings-overlay" onclick="toggleSettings()"></div>
+<aside id="settingsPanel" class="settings-panel">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px">
+    <h2 style="font-size:18px;font-weight:700">Settings</h2>
+    <button class="nav-btn" onclick="toggleSettings()">&#x2715;</button>
+  </div>
+
+  <div class="settings-section">
+    <h3>Wallet Address</h3>
+    <p class="hint">Your Monero wallet address — used to pull earnings and payout data from the pool.</p>
+    <div style="display:flex;gap:8px">
+      <input id="walletInput" class="s-input" placeholder="4..." style="font-size:12px" />
+      <button class="s-btn" onclick="saveWallet()">Save</button>
+    </div>
+    <div id="walletStatus" style="font-size:11px;margin-top:6px;color:var(--green)"></div>
+  </div>
+
+  <div class="settings-section">
+    <h3>Saved Servers</h3>
+    <p class="hint">These machines auto-connect when you open the dashboard.</p>
+    <ul class="ip-list" id="savedIPList"></ul>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <input id="settingsIPInput" class="s-input" placeholder="IP or hostname" onkeydown="if(event.key==='Enter')addIPFromSettings()" />
+      <button class="s-btn" onclick="addIPFromSettings()">Add</button>
+    </div>
+  </div>
+
+  <div class="settings-section">
+    <h3>Appearance</h3>
+    <div class="toggle-row">
+      <span>Dark Mode</span>
+      <label class="toggle-sw">
+        <input type="checkbox" id="darkToggle" onchange="applyTheme(this.checked?'dark':'light')" />
+        <span class="toggle-sl"></span>
+      </label>
+    </div>
+  </div>
+</aside>
 
 <script>
-const WS_PATHS = [
-  {port: 8188, path: '/ws/enhanced', secure: false},
-  {port: 44881, path: '', secure: false},
-  {port: 443, path: '/ws/enhanced', secure: true},
-  {port: 8443, path: '/ws/enhanced', secure: true},
-  {port: 80, path: '/ws/enhanced', secure: false},
+/* ═══════════════════════════════════════════════════════
+   CONSTANTS
+   ═══════════════════════════════════════════════════════ */
+const WS_PATHS=[
+  {port:8188,path:'/ws/enhanced',secure:false},
+  {port:44881,path:'',secure:false},
+  {port:443,path:'/ws/enhanced',secure:true},
+  {port:8443,path:'/ws/enhanced',secure:true},
+  {port:80,path:'/ws/enhanced',secure:false},
 ];
-const HTTP_PATHS = [
-  {port: 443, path: '/api/enhanced/stats', secure: true},
-  {port: 8188, path: '/api/enhanced/stats', secure: false},
-  {port: 80, path: '/api/enhanced/stats', secure: false},
-  {port: 8443, path: '/api/enhanced/stats', secure: true},
+const HTTP_PATHS=[
+  {port:443,path:'/api/enhanced/stats',secure:true},
+  {port:8188,path:'/api/enhanced/stats',secure:false},
+  {port:80,path:'/api/enhanced/stats',secure:false},
+  {port:8443,path:'/api/enhanced/stats',secure:true},
 ];
-const POLL_INTERVAL = 5000;
-const MAX_HISTORY = 60;
-const machines = new Map();
+const CONFIG_PATHS=[
+  {port:8188,path:'/api/enhanced/config',secure:false},
+  {port:443,path:'/api/enhanced/config',secure:true},
+  {port:80,path:'/api/enhanced/config',secure:false},
+];
+const POLL_MS=5000, MAX_HIST=60;
+const POOL_API='https://api.moneroocean.stream';
+const PRICE_API='https://api.coingecko.com/api/v3/simple/price';
+const ATOMIC=1e12;
 
-const grid = document.getElementById('grid');
-const emptyMsg = document.getElementById('emptyMsg');
-const ipInput = document.getElementById('ipInput');
-const addBtn = document.getElementById('addBtn');
+/* ═══════════════════════════════════════════════════════
+   STATE
+   ═══════════════════════════════════════════════════════ */
+const machines=new Map();
+const pool={price:null,chg:null,miner:null,net:null,payments:[],lastPrice:0,lastPool:0};
 
-function updateClock(){
-  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+/* ═══════════════════════════════════════════════════════
+   UTILITIES
+   ═══════════════════════════════════════════════════════ */
+function esc(s){return s.replace(/[^a-zA-Z0-9]/g,'_')}
+function setText(id,v){const el=document.getElementById(id);if(el)el.textContent=v}
+function pad(arr){const o=Array(MAX_HIST).fill(null);arr.forEach((v,i)=>o[MAX_HIST-arr.length+i]=v);return o}
+function fmtHash(v){
+  if(v==null)return'--';
+  if(v>=1e6)return(v/1e6).toFixed(2)+'M';
+  if(v>=1000)return(v/1000).toFixed(1)+'k';
+  return(+v).toFixed(1);
 }
-setInterval(updateClock, 1000);
-updateClock();
+function fmtUp(s){
+  if(!s)return'--';
+  const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60);
+  if(d>0)return d+'d '+h+'h';if(h>0)return h+'h '+m+'m';return m+'m';
+}
+function fmtXMR(atomic){return(atomic/ATOMIC).toFixed(6)}
+function fmtUSD(v){return v!=null?'$'+v.toFixed(2):'--'}
 
-addBtn.addEventListener('click', () => {
-  const ip = ipInput.value.trim();
-  if(ip && !machines.has(ip)){ addMachine(ip); ipInput.value = ''; }
-});
-ipInput.addEventListener('keydown', e => { if(e.key==='Enter') addBtn.click(); });
+/* ═══════════════════════════════════════════════════════
+   PERSISTENCE
+   ═══════════════════════════════════════════════════════ */
+function getSavedIPs(){try{return JSON.parse(localStorage.getItem('fleet_ips')||'[]')}catch(e){return[]}}
+function setSavedIPs(a){localStorage.setItem('fleet_ips',JSON.stringify(a));renderSavedIPs()}
+function getWallet(){return localStorage.getItem('fleet_wallet')||''}
+function setWalletStore(w){localStorage.setItem('fleet_wallet',w)}
+function getThemePref(){return localStorage.getItem('fleet_theme')||'light'}
+function setThemePref(t){localStorage.setItem('fleet_theme',t)}
 
-function addMachine(ip){
-  emptyMsg.style.display = 'none';
-  const id = esc(ip);
-  const card = document.createElement('div');
-  card.className = 'card';
-  card.id = 'card_'+id;
-  card.innerHTML = `
-    <div class="card-head">
-      <span class="host"><span class="status-dot dead" id="dot_${id}"></span> ${ip}</span>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="conn-info" id="conninfo_${id}">scanning...</span>
-        <button class="close-btn" onclick="removeMachine('${ip}')">&#x2715;</button>
-      </div>
-    </div>
+/* ═══════════════════════════════════════════════════════
+   THEME
+   ═══════════════════════════════════════════════════════ */
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  setThemePref(t);
+  document.getElementById('themeBtn').innerHTML=t==='dark'?'&#9789;':'&#9788;';
+  document.getElementById('darkToggle').checked=t==='dark';
+}
+function toggleTheme(){applyTheme(getThemePref()==='dark'?'light':'dark')}
 
-    <div class="section" id="cpuSection_${id}">
-      <div class="section-title"><span class="tag tag-cpu">CPU</span> Miner</div>
-      <div class="stats-grid">
-        <div class="stat-box"><div class="val" id="cpu_hr_${id}">--</div><div class="lbl">H/s</div></div>
-        <div class="stat-box"><div class="val" id="cpu_hr1m_${id}">--</div><div class="lbl">1m avg</div></div>
-        <div class="stat-box"><div class="val" id="cpu_peak_${id}">--</div><div class="lbl">Peak</div></div>
-        <div class="stat-box"><div class="val" id="cpu_acc_${id}">--</div><div class="lbl">Shares</div></div>
-      </div>
-      <div class="meta-grid">
-        <span class="meta-key">Algo</span><span class="meta-val" id="cpu_algo_${id}">--</span>
-        <span class="meta-key">Pool</span><span class="meta-val" id="cpu_pool_${id}">--</span>
-        <span class="meta-key">CPU</span><span class="meta-val" id="cpu_brand_${id}">--</span>
-        <span class="meta-key">Uptime</span><span class="meta-val" id="cpu_up_${id}">--</span>
-      </div>
-    </div>
+/* ═══════════════════════════════════════════════════════
+   NAVIGATION
+   ═══════════════════════════════════════════════════════ */
+function navigateTo(pg){
+  document.querySelectorAll('.page').forEach(p=>p.style.display='none');
+  const el=document.getElementById(pg+'Page');
+  if(el)el.style.display='';
+  document.querySelectorAll('.nav-link').forEach(l=>l.classList.remove('active'));
+  const link=document.querySelector('[data-page="'+pg+'"]');
+  if(link)link.classList.add('active');
+  if(pg==='details')resizeAllCharts();
+}
+function resizeAllCharts(){
+  machines.forEach(st=>{if(st.chart)try{st.chart.resize()}catch(e){}});
+}
 
-    <div class="section" id="gpuSection_${id}">
-      <div class="section-title"><span class="tag tag-gpu">GPU</span> Miner</div>
-      <div class="stats-grid">
-        <div class="stat-box gpu-stat"><div class="val" id="gpu_hr_${id}">--</div><div class="lbl">Hash/s</div></div>
-        <div class="stat-box gpu-stat"><div class="val" id="gpu_unit_${id}">--</div><div class="lbl">Unit</div></div>
-        <div class="stat-box gpu-stat"><div class="val" id="gpu_acc_${id}">--</div><div class="lbl">Shares</div></div>
-        <div class="stat-box gpu-stat"><div class="val" id="gpu_rej_${id}">--</div><div class="lbl">Rejected</div></div>
-      </div>
-      <div class="meta-grid">
-        <span class="meta-key">Algo</span><span class="meta-val" id="gpu_algo_${id}">--</span>
-        <span class="meta-key">Pool</span><span class="meta-val" id="gpu_pool_${id}">--</span>
-        <span class="meta-key">Software</span><span class="meta-val" id="gpu_sw_${id}">--</span>
-        <span class="meta-key">Uptime</span><span class="meta-val" id="gpu_up_${id}">--</span>
-      </div>
-      <div class="gpu-cards" id="gpu_cards_${id}"></div>
-    </div>
+/* ═══════════════════════════════════════════════════════
+   SETTINGS
+   ═══════════════════════════════════════════════════════ */
+function toggleSettings(){
+  document.getElementById('settingsPanel').classList.toggle('open');
+  document.getElementById('settingsOverlay').classList.toggle('open');
+  document.getElementById('walletInput').value=getWallet();
+}
+function saveWallet(){
+  const w=document.getElementById('walletInput').value.trim();
+  setWalletStore(w);
+  document.getElementById('walletStatus').textContent=w?'Saved — fetching pool data...':'Cleared';
+  refreshWalletBanner();
+  if(w)fetchAllPoolData();
+}
+function addIPFromSettings(){
+  const inp=document.getElementById('settingsIPInput');
+  const ip=inp.value.trim();if(!ip)return;
+  inp.value='';
+  const saved=getSavedIPs();
+  if(!saved.includes(ip)){saved.push(ip);setSavedIPs(saved)}
+  if(!machines.has(ip))addMachine(ip,true);
+}
+function removeIPSaved(ip){
+  setSavedIPs(getSavedIPs().filter(i=>i!==ip));
+  removeMachine(ip);
+}
+function renderSavedIPs(){
+  const ul=document.getElementById('savedIPList');
+  const ips=getSavedIPs();
+  ul.innerHTML=ips.map(ip=>'<li class="ip-item"><span>'+ip+'</span><button class="ip-rm" onclick="removeIPSaved(\''+ip+'\')">&times;</button></li>').join('');
+}
+function refreshWalletBanner(){
+  document.getElementById('walletBanner').style.display=getWallet()?'none':'flex';
+}
 
-    <div class="section">
-      <div class="chart-wrap"><canvas id="chart_${id}"></canvas></div>
-    </div>
+/* ═══════════════════════════════════════════════════════
+   EXTERNAL APIS
+   ═══════════════════════════════════════════════════════ */
+async function fetchPrice(){
+  try{
+    const r=await fetch(PRICE_API+'?ids=monero&vs_currencies=usd&include_24hr_change=true');
+    const d=await r.json();
+    pool.price=d.monero.usd;pool.chg=d.monero.usd_24h_change;pool.lastPrice=Date.now();
+  }catch(e){console.warn('Price fetch failed',e)}
+}
+async function fetchMinerStats(){
+  const w=getWallet();if(!w)return;
+  try{
+    const r=await fetch(POOL_API+'/miner/'+encodeURIComponent(w)+'/stats');
+    pool.miner=await r.json();
+  }catch(e){console.warn('Miner stats failed',e)}
+}
+async function fetchNetStats(){
+  try{
+    const r=await fetch(POOL_API+'/pool/stats');
+    pool.net=await r.json();
+  }catch(e){console.warn('Pool stats failed',e)}
+}
+async function fetchPayments(){
+  const w=getWallet();if(!w)return;
+  try{
+    const r=await fetch(POOL_API+'/miner/'+encodeURIComponent(w)+'/payments');
+    const d=await r.json();
+    pool.payments=Array.isArray(d)?d:[];
+  }catch(e){console.warn('Payments failed',e)}
+}
+async function fetchAllPoolData(){
+  await Promise.all([fetchPrice(),fetchMinerStats(),fetchNetStats(),fetchPayments()]);
+  updateHomeSummary();
+  updatePaySection();
+}
 
-    <div class="controls">
-      <label>CPU Threads</label>
-      <input type="range" min="10" max="100" step="5" value="50" id="thr_${id}" oninput="document.getElementById('thrv_${id}').textContent=this.value+'%'" />
-      <span class="val-display" id="thrv_${id}">50%</span>
-      <button class="btn-sm" onclick="sendCmd('${ip}','set_threads',{value:+document.getElementById('thr_${id}').value})">Apply</button>
-      <button class="btn-sm" id="pauseBtn_${id}" onclick="togglePause('${ip}')">Pause</button>
-    </div>
-  `;
-  grid.appendChild(card);
+async function tryAutoDetectWallet(ip){
+  if(getWallet())return;
+  for(const c of CONFIG_PATHS){
+    try{
+      const proto=c.secure?'https':'http';
+      const r=await fetch(proto+'://'+ip+':'+c.port+c.path,{mode:'cors'});
+      const d=await r.json();
+      if(d.wallet){
+        setWalletStore(d.wallet);
+        document.getElementById('walletInput').value=d.wallet;
+        document.getElementById('walletStatus').textContent='Auto-detected from '+ip;
+        refreshWalletBanner();
+        fetchAllPoolData();
+        return;
+      }
+    }catch(e){}
+  }
+}
 
-  const ctx = document.getElementById('chart_'+id).getContext('2d');
-  const chart = new Chart(ctx, {
-    type:'line',
-    data:{
-      labels: Array(MAX_HISTORY).fill(''),
-      datasets:[
-        {
-          label:'CPU H/s',
-          data: Array(MAX_HISTORY).fill(null),
-          borderColor:'#58a6ff',
-          backgroundColor:'rgba(88,166,255,0.06)',
-          fill:true, tension:0.3, pointRadius:0, borderWidth:1.5,
-        },
-        {
-          label:'GPU MH/s',
-          data: Array(MAX_HISTORY).fill(null),
-          borderColor:'#bc8cff',
-          backgroundColor:'rgba(188,140,255,0.06)',
-          fill:true, tension:0.3, pointRadius:0, borderWidth:1.5,
-          yAxisID:'yGpu',
-        }
-      ]
-    },
-    options:{
-      responsive:true, maintainAspectRatio:false, animation:false,
-      interaction:{mode:'index',intersect:false},
-      scales:{
-        x:{display:false},
-        y:{display:true, position:'left', grid:{color:'#1e2630'}, ticks:{color:'#58a6ff',font:{size:9}}, title:{display:true,text:'CPU H/s',color:'#58a6ff',font:{size:9}}},
-        yGpu:{display:true, position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#bc8cff',font:{size:9}}, title:{display:true,text:'GPU',color:'#bc8cff',font:{size:9}}}
-      },
-      plugins:{legend:{display:true,labels:{boxWidth:10,font:{size:10},color:'#6e7681'}}}
+/* ═══════════════════════════════════════════════════════
+   HOME PAGE UPDATES
+   ═══════════════════════════════════════════════════════ */
+function updateHomeSummary(){
+  const p=pool.price, ms=pool.miner, ns=pool.net;
+
+  setText('h_price',p!=null?fmtUSD(p):'--');
+  const ce=document.getElementById('h_priceChg');
+  if(pool.chg!=null){
+    ce.textContent=(pool.chg>=0?'+':'')+pool.chg.toFixed(2)+'% (24h)';
+    ce.className='change '+(pool.chg>=0?'up':'down');
+  }
+
+  if(!ms)return;
+  const paid=(ms.amtPaid||0)/ATOMIC, pend=(ms.amtDue||0)/ATOMIC;
+
+  setText('h_earnXMR',paid.toFixed(6)+' XMR');
+  setText('h_earnUSD',p!=null?fmtUSD(paid*p):'--');
+  setText('h_pendXMR',pend.toFixed(6)+' XMR');
+  setText('h_pendUSD',p!=null?fmtUSD(pend*p):'--');
+
+  const myHash=ms.hash||ms.hash2||0;
+  if(ns&&ns.network){
+    const diff=ns.network.difficulty||1;
+    const rew=(ns.network.reward||600000000000)/ATOMIC;
+    const daily=myHash*86400*rew/diff;
+    const monthly=daily*30;
+
+    setText('h_dailyXMR',daily.toFixed(6)+' XMR/day');
+    setText('h_dailyUSD',p!=null?fmtUSD(daily*p):'--');
+    setText('h_moUSD',p!=null?fmtUSD(monthly*p):'--');
+
+    const minPay=ns.config?(ns.config.minPayment||3000000000)/ATOMIC:0.003;
+    const rem=minPay-pend;
+    if(rem<=0){
+      setText('h_payTime','Soon');
+      setText('h_payAmt',minPay.toFixed(4)+' XMR');
+    }else if(daily>0){
+      const hrs=rem/daily*24;
+      setText('h_payTime',hrs<1?'< 1 hour':hrs<24?'~'+Math.round(hrs)+' hrs':'~'+(hrs/24).toFixed(1)+' days');
+      setText('h_payAmt',minPay.toFixed(4)+' XMR'+(p!=null?' ('+fmtUSD(minPay*p)+')':''));
     }
-  });
+  }
+}
 
-  const state = {ws:null, chart, cpuHistory:[], gpuHistory:[], paused:false, reconnectTimer:null, connectedPort:null, connectedPath:null};
-  machines.set(ip, state);
+function updatePaySection(){
+  const hdr=document.getElementById('payHeader'),sec=document.getElementById('paySection');
+  if(!pool.payments.length){hdr.style.display='none';sec.style.display='none';return}
+  hdr.style.display='';sec.style.display='';
+  const p=pool.price;
+  const rows=pool.payments.slice(0,10).map(pm=>{
+    const xmr=(pm.amount||pm.value||0)/ATOMIC;
+    const dt=new Date((pm.ts||pm.timestamp||0)*1000);
+    return '<tr><td>'+dt.toLocaleDateString()+'</td><td>'+xmr.toFixed(6)+' XMR</td><td>'+(p!=null?fmtUSD(xmr*p):'--')+'</td><td style="color:var(--green)">&#10003; Confirmed</td></tr>';
+  }).join('');
+  sec.innerHTML='<div class="pay-wrap"><table><thead><tr><th>Date</th><th>Amount</th><th>Value</th><th>Status</th></tr></thead><tbody>'+rows+'</tbody></table></div>';
+}
+
+function updateServerCards(){
+  const grid=document.getElementById('serverGrid');
+  const empty=document.getElementById('homeEmpty');
+  const cnt=document.getElementById('machineCount');
+  if(machines.size===0){empty.style.display='';cnt.textContent='(0 connected)';return}
+  empty.style.display='none';
+  let online=0;
+  let html='';
+  machines.forEach((st,ip)=>{
+    const d=st.latestData||{};
+    const cpu=d.cpu||d||{};
+    const gpu=d.gpu||null;
+    const up=st.online;if(up)online++;
+    const name=(cpu.hostname&&cpu.hostname!=='unknown')?cpu.hostname:ip;
+    html+='<div class="server-card" onclick="navigateTo(\'details\');setTimeout(()=>{const e=document.getElementById(\'card_'+esc(ip)+'\');if(e)e.scrollIntoView({behavior:\'smooth\',block:\'center\'})},100)">'
+      +'<div class="server-name"><span class="status-ind '+(up?'on':'off')+'"></span>'+name+'</div>'
+      +'<div class="server-meta">'+(up?'Online':'Offline')+' &middot; '+ip+' &middot; Up '+fmtUp(cpu.uptime)+'</div>'
+      +'<div class="server-stats">'
+        +'<div class="server-stat"><div class="sl">CPU</div><div class="sv" style="color:var(--accent)">'+fmtHash(cpu.hashrate_now)+' H/s</div></div>'
+        +'<div class="server-stat"><div class="sl">GPU</div><div class="sv" style="color:var(--purple)">'+(gpu&&gpu.total_hashrate?gpu.total_hashrate.toFixed(1)+' '+(gpu.hashrate_unit||''):'N/A')+'</div></div>'
+      +'</div></div>';
+  });
+  cnt.textContent='('+online+' of '+machines.size+' online)';
+  grid.innerHTML=html;
+}
+
+/* ═══════════════════════════════════════════════════════
+   MACHINE CONNECTION LOGIC
+   ═══════════════════════════════════════════════════════ */
+function addMachine(ip, skipSave){
+  if(machines.has(ip))return;
+  if(!skipSave){
+    const saved=getSavedIPs();
+    if(!saved.includes(ip)){saved.push(ip);setSavedIPs(saved)}
+  }
+  const st={ws:null,chart:null,cpuHistory:[],gpuHistory:[],paused:false,
+    reconnectTimer:null,pollTimer:null,connectedPort:null,connectedPath:null,
+    online:false,latestData:{},walletChecked:false};
+  machines.set(ip,st);
+  updateEmpty();updateServerCards();
+  createDetailCard(ip);
   scanPorts(ip);
 }
 
 function removeMachine(ip){
-  const state = machines.get(ip);
-  if(!state) return;
-  if(state.ws) state.ws.close();
-  if(state.reconnectTimer) clearTimeout(state.reconnectTimer);
-  if(state.pollTimer) clearTimeout(state.pollTimer);
-  if(state.chart) state.chart.destroy();
-  const el = document.getElementById('card_'+esc(ip));
-  if(el) el.remove();
+  const st=machines.get(ip);if(!st)return;
+  if(st.ws)try{st.ws.close()}catch(e){}
+  if(st.reconnectTimer)clearTimeout(st.reconnectTimer);
+  if(st.pollTimer)clearTimeout(st.pollTimer);
+  if(st.chart)st.chart.destroy();
+  const el=document.getElementById('card_'+esc(ip));if(el)el.remove();
   machines.delete(ip);
-  if(machines.size===0) emptyMsg.style.display='';
+  const saved=getSavedIPs().filter(i=>i!==ip);setSavedIPs(saved);
+  updateEmpty();updateServerCards();
 }
-window.removeMachine = removeMachine;
+window.removeMachine=removeMachine;
+
+function updateEmpty(){
+  const h=document.getElementById('homeEmpty'),d=document.getElementById('detailEmpty');
+  if(h)h.style.display=machines.size===0?'':'none';
+  if(d)d.style.display=machines.size===0?'':'none';
+}
 
 function scanPorts(ip){
-  const state = machines.get(ip);
-  if(!state) return;
-  const id = esc(ip);
-  const info = document.getElementById('conninfo_'+id);
-  let found = false, tried = 0;
-
-  WS_PATHS.forEach(entry => {
-    if(found) return;
-    const proto = entry.secure ? 'wss' : 'ws';
-    const url = `${proto}://${ip}:${entry.port}${entry.path}`;
-    const ws = new WebSocket(url);
-    const timer = setTimeout(()=>{ try{ws.close();}catch(e){} }, 4000);
-
-    ws.onopen = () => {
-      clearTimeout(timer);
-      if(!found){
-        found = true;
-        setupWS(ip, ws, entry);
-      } else { ws.close(); }
-    };
-    ws.onerror = () => { clearTimeout(timer); bump(); };
-    ws.onclose = () => { clearTimeout(timer); if(!found) bump(); };
-
-    function bump(){
-      tried++;
-      if(tried >= WS_PATHS.length && !found){
-        if(info) info.textContent = 'WS failed, trying HTTP poll...';
-        scanHTTP(ip);
-      }
-    }
+  const st=machines.get(ip);if(!st)return;
+  const id=esc(ip);
+  const info=document.getElementById('conninfo_'+id);
+  let found=false,tried=0;
+  WS_PATHS.forEach(entry=>{
+    if(found)return;
+    const proto=entry.secure?'wss':'ws';
+    const ws=new WebSocket(proto+'://'+ip+':'+entry.port+(entry.path||''));
+    const timer=setTimeout(()=>{try{ws.close()}catch(e){}},4000);
+    ws.onopen=()=>{clearTimeout(timer);if(!found){found=true;setupWS(ip,ws,entry)}else ws.close()};
+    ws.onerror=()=>{clearTimeout(timer);bump()};
+    ws.onclose=()=>{clearTimeout(timer);if(!found)bump()};
+    function bump(){tried++;if(tried>=WS_PATHS.length&&!found){if(info)info.textContent='WS failed, trying HTTP...';scanHTTP(ip)}}
   });
 }
 
 function scanHTTP(ip){
-  const state = machines.get(ip);
-  if(!state) return;
-  const id = esc(ip);
-  const info = document.getElementById('conninfo_'+id);
-  let found = false;
-
-  HTTP_PATHS.forEach(entry => {
-    if(found) return;
-    const proto = entry.secure ? 'https' : 'http';
-    const url = `${proto}://${ip}:${entry.port}${entry.path}`;
-    fetch(url, {mode:'cors'}).then(r => {
-      if(!r.ok) throw new Error(r.status);
-      return r.json();
-    }).then(data => {
-      if(!found && data.stats){
-        found = true;
-        setupHTTPPoll(ip, entry);
-      }
+  const st=machines.get(ip);if(!st)return;
+  const id=esc(ip),info=document.getElementById('conninfo_'+id);
+  let found=false;
+  HTTP_PATHS.forEach(entry=>{
+    if(found)return;
+    const proto=entry.secure?'https':'http';
+    fetch(proto+'://'+ip+':'+entry.port+entry.path,{mode:'cors'}).then(r=>{if(!r.ok)throw 0;return r.json()}).then(d=>{
+      if(!found&&d.stats){found=true;setupHTTPPoll(ip,entry)}
     }).catch(()=>{});
   });
-
-  setTimeout(()=>{
-    if(!found){
-      if(info) info.textContent = 'no connection, retrying...';
-      state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
-    }
-  }, 5000);
+  setTimeout(()=>{if(!found){if(info)info.textContent='no connection, retrying...';st.reconnectTimer=setTimeout(()=>scanPorts(ip),8000)}},5000);
 }
 
-function setupHTTPPoll(ip, entry){
-  const state = machines.get(ip);
-  if(!state) return;
-  const id = esc(ip);
-  const proto = entry.secure ? 'https' : 'http';
-  const url = `${proto}://${ip}:${entry.port}${entry.path}`;
-  state.pollUrl = url;
-  state.pollMode = true;
-
-  const info = document.getElementById('conninfo_'+id);
-  const dot = document.getElementById('dot_'+id);
-  if(info) info.textContent = 'HTTP :'+entry.port;
-  if(dot) dot.classList.remove('dead');
-
-  let failCount = 0;
+function setupHTTPPoll(ip,entry){
+  const st=machines.get(ip);if(!st)return;
+  const id=esc(ip),proto=entry.secure?'https':'http';
+  const url=proto+'://'+ip+':'+entry.port+entry.path;
+  st.pollUrl=url;st.pollMode=true;
+  const info=document.getElementById('conninfo_'+id),dot=document.getElementById('dot_'+id);
+  if(info)info.textContent='HTTP :'+entry.port;
+  if(dot)dot.classList.remove('dead');
+  st.online=true;
+  if(!st.walletChecked){st.walletChecked=true;tryAutoDetectWallet(ip)}
+  let fails=0;
   function poll(){
-    if(!machines.has(ip)) return;
-    fetch(url, {mode:'cors'}).then(r => r.json()).then(data => {
-      failCount = 0;
-      if(dot) dot.classList.remove('dead');
-      if(data.stats) updateCard(ip, data.stats);
-      state.pollTimer = setTimeout(poll, POLL_INTERVAL);
+    if(!machines.has(ip))return;
+    fetch(url,{mode:'cors'}).then(r=>r.json()).then(d=>{
+      fails=0;if(dot)dot.classList.remove('dead');st.online=true;
+      if(d.stats)handleStats(ip,d.stats);
+      st.pollTimer=setTimeout(poll,POLL_MS);
     }).catch(()=>{
-      failCount++;
-      if(dot) dot.classList.add('dead');
-      if(failCount > 5){
-        if(info) info.textContent = 'lost connection, rescanning...';
-        state.pollMode = false;
-        state.reconnectTimer = setTimeout(()=> scanPorts(ip), 5000);
-      } else {
-        state.pollTimer = setTimeout(poll, POLL_INTERVAL);
-      }
+      fails++;if(dot)dot.classList.add('dead');st.online=false;updateServerCards();
+      if(fails>5){if(info)info.textContent='lost, rescanning...';st.pollMode=false;st.reconnectTimer=setTimeout(()=>scanPorts(ip),5000)}
+      else st.pollTimer=setTimeout(poll,POLL_MS);
     });
   }
   poll();
 }
 
-function setupWS(ip, ws, entry){
-  const state = machines.get(ip);
-  if(!state) return;
-  const id = esc(ip);
-  state.ws = ws;
-  state.connectedPort = entry.port;
-  state.connectedPath = entry.path;
-
-  const info = document.getElementById('conninfo_'+id);
-  const dot = document.getElementById('dot_'+id);
-  if(info) info.textContent = ':'+entry.port+(entry.path||'');
-  if(dot) dot.classList.remove('dead');
-
-  ws.onmessage = evt => {
+function setupWS(ip,ws,entry){
+  const st=machines.get(ip);if(!st)return;
+  const id=esc(ip);st.ws=ws;st.connectedPort=entry.port;st.connectedPath=entry.path;
+  const info=document.getElementById('conninfo_'+id),dot=document.getElementById('dot_'+id);
+  if(info)info.textContent=':'+entry.port+(entry.path||'');
+  if(dot)dot.classList.remove('dead');
+  st.online=true;updateServerCards();
+  if(!st.walletChecked){st.walletChecked=true;tryAutoDetectWallet(ip)}
+  ws.onmessage=evt=>{
     try{
-      const msg = JSON.parse(evt.data);
-      if(msg.type==='stats' || msg.type==='status') updateCard(ip, msg.data);
-      else if(msg.data) updateCard(ip, msg.data);
-      else if(msg.cpu || msg.gpu) updateCard(ip, msg);
+      const msg=JSON.parse(evt.data);
+      if(msg.type==='stats'||msg.type==='status')handleStats(ip,msg.data);
+      else if(msg.data)handleStats(ip,msg.data);
+      else if(msg.cpu||msg.gpu)handleStats(ip,msg);
     }catch(e){}
   };
-  ws.onclose = () => {
-    if(dot) dot.classList.add('dead');
-    if(info) info.textContent = 'reconnecting...';
-    state.reconnectTimer = setTimeout(()=> connectWS(ip, entry.port, entry.path, entry.secure), 5000);
+  ws.onclose=()=>{
+    if(dot)dot.classList.add('dead');st.online=false;updateServerCards();
+    if(info)info.textContent='reconnecting...';
+    st.reconnectTimer=setTimeout(()=>connectWS(ip,entry.port,entry.path,entry.secure),5000);
   };
-  ws.onerror = () => {};
+  ws.onerror=()=>{};
 }
 
-function connectWS(ip, port, path, secure){
-  const state = machines.get(ip);
-  if(!state) return;
-  if(!port){ scanPorts(ip); return; }
-  const id = esc(ip);
-  const proto = secure ? 'wss' : 'ws';
+function connectWS(ip,port,path,secure){
+  const st=machines.get(ip);if(!st)return;
+  if(!port){scanPorts(ip);return}
+  const id=esc(ip),proto=secure?'wss':'ws';
   try{
-    const ws = new WebSocket(`${proto}://${ip}:${port}${path||''}`);
-    ws.onopen = () => setupWS(ip, ws, {port, path, secure});
-    ws.onerror = () => ws.close();
-    ws.onclose = () => {
-      const dot = document.getElementById('dot_'+id);
-      if(dot) dot.classList.add('dead');
-      state.reconnectTimer = setTimeout(()=> connectWS(ip, port, path, secure), 5000);
+    const ws=new WebSocket(proto+'://'+ip+':'+port+(path||''));
+    ws.onopen=()=>setupWS(ip,ws,{port,path,secure});
+    ws.onerror=()=>ws.close();
+    ws.onclose=()=>{
+      const dot=document.getElementById('dot_'+id);if(dot)dot.classList.add('dead');
+      st.online=false;updateServerCards();
+      st.reconnectTimer=setTimeout(()=>connectWS(ip,port,path,secure),5000);
     };
-  }catch(e){
-    state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
-  }
+  }catch(e){st.reconnectTimer=setTimeout(()=>scanPorts(ip),8000)}
 }
 
-function updateCard(ip, d){
-  const id = esc(ip);
-  const state = machines.get(ip);
-  if(!state) return;
+/* ═══════════════════════════════════════════════════════
+   DATA HANDLER (feeds both pages)
+   ═══════════════════════════════════════════════════════ */
+function handleStats(ip,d){
+  const st=machines.get(ip);if(!st)return;
+  st.latestData=d;st.online=true;
 
-  const cpu = d.cpu || d;
-  const gpu = d.gpu || null;
-
-  // CPU section
-  if(cpu && cpu.hashrate_now !== undefined){
-    setText('cpu_hr_'+id, fmtHash(cpu.hashrate_now));
-    setText('cpu_hr1m_'+id, fmtHash(cpu.hashrate_1m||0));
-    setText('cpu_peak_'+id, fmtHash(cpu.hashrate_max||0));
-    setText('cpu_acc_'+id, (cpu.accepted||0)+'/'+(cpu.rejected||0));
-    setText('cpu_algo_'+id, cpu.algo||'--');
-    setText('cpu_pool_'+id, cpu.pool||'--');
-    setText('cpu_brand_'+id, cpu.cpu_brand||'--');
-    setText('cpu_up_'+id, fmtUptime(cpu.uptime||0));
-
-    if(cpu.hostname && cpu.hostname!=='unknown'){
-      const host = document.querySelector('#card_'+id+' .host');
-      if(host) host.innerHTML = `<span class="status-dot" id="dot_${id}"></span> ${cpu.hostname} <span style="color:var(--dim);font-weight:400">(${ip})</span>`;
-    }
-
-    state.cpuHistory.push(cpu.hashrate_now||0);
-    if(state.cpuHistory.length > MAX_HISTORY) state.cpuHistory.shift();
+  if(d.wallet&&!getWallet()){
+    setWalletStore(d.wallet);
+    document.getElementById('walletInput').value=d.wallet;
+    refreshWalletBanner();fetchAllPoolData();
   }
 
-  // GPU section
+  updateDetailCard(ip,d);
+  updateServerCards();
+}
+
+/* ═══════════════════════════════════════════════════════
+   DETAIL CARD (full technical view)
+   ═══════════════════════════════════════════════════════ */
+function createDetailCard(ip){
+  const id=esc(ip);
+  const card=document.createElement('div');card.className='card';card.id='card_'+id;
+  card.innerHTML=
+    '<div class="card-head">'
+      +'<span class="host"><span class="status-dot dead" id="dot_'+id+'"></span> '+ip+'</span>'
+      +'<div style="display:flex;align-items:center;gap:8px">'
+        +'<span class="conn-info" id="conninfo_'+id+'">scanning...</span>'
+        +'<button class="close-btn" onclick="removeMachine(\''+ip+'\')">&#x2715;</button>'
+      +'</div>'
+    +'</div>'
+    +'<div class="section" id="cpuSec_'+id+'">'
+      +'<div class="section-title"><span class="tag tag-cpu">CPU</span> Miner</div>'
+      +'<div class="stats-grid">'
+        +'<div class="stat-box"><div class="val" id="cpu_hr_'+id+'">--</div><div class="lbl">H/s</div></div>'
+        +'<div class="stat-box"><div class="val" id="cpu_hr1m_'+id+'">--</div><div class="lbl">1m avg</div></div>'
+        +'<div class="stat-box"><div class="val" id="cpu_peak_'+id+'">--</div><div class="lbl">Peak</div></div>'
+        +'<div class="stat-box"><div class="val" id="cpu_acc_'+id+'">--</div><div class="lbl">Shares</div></div>'
+      +'</div>'
+      +'<div class="meta-grid">'
+        +'<span class="mk">Algo</span><span class="mv" id="cpu_algo_'+id+'">--</span>'
+        +'<span class="mk">Pool</span><span class="mv" id="cpu_pool_'+id+'">--</span>'
+        +'<span class="mk">CPU</span><span class="mv" id="cpu_brand_'+id+'">--</span>'
+        +'<span class="mk">Uptime</span><span class="mv" id="cpu_up_'+id+'">--</span>'
+      +'</div>'
+    +'</div>'
+    +'<div class="section" id="gpuSec_'+id+'">'
+      +'<div class="section-title"><span class="tag tag-gpu">GPU</span> Miner</div>'
+      +'<div class="stats-grid">'
+        +'<div class="stat-box gpu-stat"><div class="val" id="gpu_hr_'+id+'">--</div><div class="lbl">Hash/s</div></div>'
+        +'<div class="stat-box gpu-stat"><div class="val" id="gpu_unit_'+id+'">--</div><div class="lbl">Unit</div></div>'
+        +'<div class="stat-box gpu-stat"><div class="val" id="gpu_acc_'+id+'">--</div><div class="lbl">Shares</div></div>'
+        +'<div class="stat-box gpu-stat"><div class="val" id="gpu_rej_'+id+'">--</div><div class="lbl">Rejected</div></div>'
+      +'</div>'
+      +'<div class="meta-grid">'
+        +'<span class="mk">Algo</span><span class="mv" id="gpu_algo_'+id+'">--</span>'
+        +'<span class="mk">Pool</span><span class="mv" id="gpu_pool_'+id+'">--</span>'
+        +'<span class="mk">Software</span><span class="mv" id="gpu_sw_'+id+'">--</span>'
+        +'<span class="mk">Uptime</span><span class="mv" id="gpu_up_'+id+'">--</span>'
+      +'</div>'
+      +'<div class="gpu-cards" id="gpu_cards_'+id+'"></div>'
+    +'</div>'
+    +'<div class="section"><div class="chart-wrap"><canvas id="chart_'+id+'"></canvas></div></div>'
+    +'<div class="controls">'
+      +'<label>CPU Threads</label>'
+      +'<input type="range" min="10" max="100" step="5" value="50" id="thr_'+id+'" oninput="document.getElementById(\'thrv_'+id+'\').textContent=this.value+\'%\'" />'
+      +'<span class="vd" id="thrv_'+id+'">50%</span>'
+      +'<button class="btn-sm" onclick="sendCmd(\''+ip+'\',\'set_threads\',{value:+document.getElementById(\'thr_'+id+'\').value})">Apply</button>'
+      +'<button class="btn-sm" id="pauseBtn_'+id+'" onclick="togglePause(\''+ip+'\')">Pause</button>'
+    +'</div>';
+  document.getElementById('detailGrid').appendChild(card);
+
+  const ctx=document.getElementById('chart_'+id).getContext('2d');
+  const st=machines.get(ip);
+  st.chart=new Chart(ctx,{
+    type:'line',
+    data:{
+      labels:Array(MAX_HIST).fill(''),
+      datasets:[
+        {label:'CPU H/s',data:Array(MAX_HIST).fill(null),borderColor:'var(--accent)',backgroundColor:'rgba(59,130,246,0.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5},
+        {label:'GPU MH/s',data:Array(MAX_HIST).fill(null),borderColor:'var(--purple)',backgroundColor:'rgba(139,92,246,0.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5,yAxisID:'yGpu'}
+      ]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:false,
+      interaction:{mode:'index',intersect:false},
+      scales:{
+        x:{display:false},
+        y:{display:true,position:'left',grid:{color:'var(--chart-grid)'},ticks:{color:'var(--accent)',font:{size:9}},title:{display:true,text:'CPU H/s',color:'var(--accent)',font:{size:9}}},
+        yGpu:{display:true,position:'right',grid:{drawOnChartArea:false},ticks:{color:'var(--purple)',font:{size:9}},title:{display:true,text:'GPU',color:'var(--purple)',font:{size:9}}}
+      },
+      plugins:{legend:{display:true,labels:{boxWidth:10,font:{size:10},color:'var(--dim)'}}}
+    }
+  });
+}
+
+function updateDetailCard(ip,d){
+  const id=esc(ip),st=machines.get(ip);if(!st)return;
+  const cpu=d.cpu||d,gpu=d.gpu||null;
+
+  if(cpu&&cpu.hashrate_now!==undefined){
+    setText('cpu_hr_'+id,fmtHash(cpu.hashrate_now));
+    setText('cpu_hr1m_'+id,fmtHash(cpu.hashrate_1m||0));
+    setText('cpu_peak_'+id,fmtHash(cpu.hashrate_max||0));
+    setText('cpu_acc_'+id,(cpu.accepted||0)+'/'+(cpu.rejected||0));
+    setText('cpu_algo_'+id,cpu.algo||'--');
+    setText('cpu_pool_'+id,cpu.pool||'--');
+    setText('cpu_brand_'+id,cpu.cpu_brand||'--');
+    setText('cpu_up_'+id,fmtUp(cpu.uptime||0));
+
+    if(cpu.hostname&&cpu.hostname!=='unknown'){
+      const host=document.querySelector('#card_'+id+' .host');
+      if(host)host.innerHTML='<span class="status-dot" id="dot_'+id+'"></span> '+cpu.hostname+' <span style="color:var(--dim);font-weight:400">('+ip+')</span>';
+    }
+    st.cpuHistory.push(cpu.hashrate_now||0);
+    if(st.cpuHistory.length>MAX_HIST)st.cpuHistory.shift();
+  }
+
   if(gpu){
-    setText('gpu_hr_'+id, gpu.total_hashrate ? gpu.total_hashrate.toFixed(2) : '--');
-    setText('gpu_unit_'+id, gpu.hashrate_unit||'--');
-    setText('gpu_acc_'+id, (gpu.accepted||0)+'/'+(gpu.rejected||0));
-    setText('gpu_rej_'+id, gpu.stales||0);
-    setText('gpu_algo_'+id, gpu.algo||'--');
-    setText('gpu_pool_'+id, gpu.pool||'--');
-    setText('gpu_sw_'+id, gpu.software||'--');
-    setText('gpu_up_'+id, fmtUptime(gpu.uptime||0));
+    setText('gpu_hr_'+id,gpu.total_hashrate?gpu.total_hashrate.toFixed(2):'--');
+    setText('gpu_unit_'+id,gpu.hashrate_unit||'--');
+    setText('gpu_acc_'+id,(gpu.accepted||0)+'/'+(gpu.rejected||0));
+    setText('gpu_rej_'+id,gpu.stales||0);
+    setText('gpu_algo_'+id,gpu.algo||'--');
+    setText('gpu_pool_'+id,gpu.pool||'--');
+    setText('gpu_sw_'+id,gpu.software||'--');
+    setText('gpu_up_'+id,fmtUp(gpu.uptime||0));
 
-    const gpuContainer = document.getElementById('gpu_cards_'+id);
-    if(gpuContainer && gpu.gpus && gpu.gpus.length){
-      gpuContainer.innerHTML = gpu.gpus.map(g => `
-        <div class="gpu-card">
-          <div class="gpu-name">${g.name||'GPU'}</div>
-          <div class="gpu-row">Hash <span>${typeof g.hashrate==='number'? g.hashrate.toFixed(2) : '--'} ${gpu.hashrate_unit||''}</span></div>
-          <div class="gpu-row">Temp <span>${g.temp||0}&deg;C</span></div>
-          <div class="gpu-row">Fan <span>${g.fan||0}%</span></div>
-          <div class="gpu-row">Power <span>${g.power? g.power.toFixed(0)+'W' : '--'}</span></div>
-        </div>
-      `).join('');
+    const gc=document.getElementById('gpu_cards_'+id);
+    if(gc&&gpu.gpus&&gpu.gpus.length){
+      gc.innerHTML=gpu.gpus.map(g=>
+        '<div class="gpu-card"><div class="gn">'+(g.name||'GPU')+'</div>'
+        +'<div class="gr">Hash <span>'+(typeof g.hashrate==='number'?g.hashrate.toFixed(2):'--')+' '+(gpu.hashrate_unit||'')+'</span></div>'
+        +'<div class="gr">Temp <span>'+(g.temp||0)+'&deg;C</span></div>'
+        +'<div class="gr">Fan <span>'+(g.fan||0)+'%</span></div>'
+        +'<div class="gr">Power <span>'+(g.power?g.power.toFixed(0)+'W':'--')+'</span></div></div>'
+      ).join('');
     }
-
-    state.gpuHistory.push(gpu.total_hashrate||0);
-    if(state.gpuHistory.length > MAX_HISTORY) state.gpuHistory.shift();
+    st.gpuHistory.push(gpu.total_hashrate||0);
+    if(st.gpuHistory.length>MAX_HIST)st.gpuHistory.shift();
   }
 
-  // Update chart
-  const chart = state.chart;
-  chart.data.datasets[0].data = pad(state.cpuHistory);
-  chart.data.datasets[1].data = pad(state.gpuHistory);
-  chart.data.labels = Array(MAX_HISTORY).fill('');
-  chart.update();
+  if(st.chart){
+    st.chart.data.datasets[0].data=pad(st.cpuHistory);
+    st.chart.data.datasets[1].data=pad(st.gpuHistory);
+    st.chart.data.labels=Array(MAX_HIST).fill('');
+    st.chart.update();
+  }
 }
 
-function sendCmd(ip, cmd, extra){
-  const state = machines.get(ip);
-  if(!state||!state.ws||state.ws.readyState!==1) return;
-  state.ws.send(JSON.stringify({cmd, ...extra}));
+function sendCmd(ip,cmd,extra){
+  const st=machines.get(ip);if(!st||!st.ws||st.ws.readyState!==1)return;
+  st.ws.send(JSON.stringify({cmd,...extra}));
 }
-window.sendCmd = sendCmd;
+window.sendCmd=sendCmd;
 
 function togglePause(ip){
-  const state = machines.get(ip);
-  if(!state) return;
-  const id = esc(ip);
-  state.paused = !state.paused;
-  sendCmd(ip, state.paused ? 'pause' : 'resume', {});
-  const btn = document.getElementById('pauseBtn_'+id);
-  btn.textContent = state.paused ? 'Resume' : 'Pause';
-  btn.classList.toggle('active', state.paused);
+  const st=machines.get(ip);if(!st)return;
+  const id=esc(ip);st.paused=!st.paused;
+  sendCmd(ip,st.paused?'pause':'resume',{});
+  const btn=document.getElementById('pauseBtn_'+id);
+  if(btn){btn.textContent=st.paused?'Resume':'Pause';btn.classList.toggle('active',st.paused)}
 }
-window.togglePause = togglePause;
+window.togglePause=togglePause;
 
-function esc(ip){ return ip.replace(/[^a-zA-Z0-9]/g,'_'); }
-function setText(id, v){ const el=document.getElementById(id); if(el) el.textContent=v; }
-function pad(arr){ const out = Array(MAX_HISTORY).fill(null); arr.forEach((v,i)=> out[MAX_HISTORY-arr.length+i]=v); return out; }
+/* ═══════════════════════════════════════════════════════
+   CLOCK
+   ═══════════════════════════════════════════════════════ */
+function tickClock(){document.getElementById('clock').textContent=new Date().toLocaleTimeString()}
+setInterval(tickClock,1000);tickClock();
 
-function fmtHash(v){
-  if(v===null||v===undefined) return '--';
-  if(v>=1e6) return (v/1e6).toFixed(2)+'M';
-  if(v>=1000) return (v/1000).toFixed(1)+'k';
-  return v.toFixed(1);
-}
-function fmtUptime(s){
-  const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60);
-  if(d>0) return d+'d '+h+'h';
-  if(h>0) return h+'h '+m+'m';
-  return m+'m';
-}
+/* ═══════════════════════════════════════════════════════
+   INITIALIZATION
+   ═══════════════════════════════════════════════════════ */
+(function init(){
+  applyTheme(getThemePref());
+  refreshWalletBanner();
+  renderSavedIPs();
+
+  const addBtn=document.getElementById('addBtn');
+  const ipInput=document.getElementById('ipInput');
+  addBtn.addEventListener('click',()=>{
+    const ip=ipInput.value.trim();
+    if(ip&&!machines.has(ip)){addMachine(ip);ipInput.value=''}
+  });
+  ipInput.addEventListener('keydown',e=>{if(e.key==='Enter')addBtn.click()});
+
+  const saved=getSavedIPs();
+  saved.forEach(ip=>addMachine(ip,true));
+
+  if(getWallet())fetchAllPoolData();
+
+  setInterval(()=>{
+    if(Date.now()-pool.lastPrice>120000)fetchPrice().then(updateHomeSummary);
+  },30000);
+
+  setInterval(()=>{
+    const w=getWallet();if(!w)return;
+    Promise.all([fetchMinerStats(),fetchNetStats()]).then(()=>{updateHomeSummary()});
+  },60000);
+
+  setInterval(()=>{
+    const w=getWallet();if(!w)return;
+    fetchPayments().then(updatePaySection);
+  },300000);
+})();
 </script>
 </body>
 </html>

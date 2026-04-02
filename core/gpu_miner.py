@@ -275,7 +275,7 @@ class GPUMinerManager:
         logger.info("GPU miner [%s] cmd: %s ...", self.miner_type, " ".join(cmd[:6]))
 
         log_fh = open(self.log_path, "a")
-        popen_kwargs: dict = {"stdout": subprocess.DEVNULL, "stderr": log_fh}
+        popen_kwargs: dict = {"stdout": log_fh, "stderr": log_fh, "stdin": subprocess.DEVNULL}
 
         if IS_WINDOWS:
             si = subprocess.STARTUPINFO()

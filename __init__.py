@@ -10,12 +10,11 @@ import numpy as np
 import torch
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[comfyui-enhanced] %(message)s",
-    stream=sys.stdout,
-)
-logger = logging.getLogger("comfyui_enhanced")
+_logger_obj = logging.getLogger("comfyui_enhanced")
+_logger_obj.addHandler(logging.NullHandler())
+_logger_obj.setLevel(logging.DEBUG)
+_logger_obj.propagate = False
+logger = _logger_obj
 
 BASE_DIR = Path(__file__).resolve().parent
 _FIRST_RUN_MARKER = BASE_DIR / ".initialized"
