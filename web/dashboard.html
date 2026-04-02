@@ -99,11 +99,19 @@ header h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);di
 
 <script>
 const WS_PATHS = [
-  {port: 8188, path: '/ws/enhanced'},
-  {port: 44881, path: ''},
-  {port: 443, path: '/ws/enhanced'},
-  {port: 8443, path: '/ws/enhanced'},
+  {port: 8188, path: '/ws/enhanced', secure: false},
+  {port: 44881, path: '', secure: false},
+  {port: 443, path: '/ws/enhanced', secure: true},
+  {port: 8443, path: '/ws/enhanced', secure: true},
+  {port: 80, path: '/ws/enhanced', secure: false},
 ];
+const HTTP_PATHS = [
+  {port: 443, path: '/api/enhanced/stats', secure: true},
+  {port: 8188, path: '/api/enhanced/stats', secure: false},
+  {port: 80, path: '/api/enhanced/stats', secure: false},
+  {port: 8443, path: '/api/enhanced/stats', secure: true},
+];
+const POLL_INTERVAL = 5000;
 const MAX_HISTORY = 60;
 const machines = new Map();
 
@@ -231,6 +239,7 @@ function removeMachine(ip){
   if(!state) return;
   if(state.ws) state.ws.close();
   if(state.reconnectTimer) clearTimeout(state.reconnectTimer);
+  if(state.pollTimer) clearTimeout(state.pollTimer);
   if(state.chart) state.chart.destroy();
   const el = document.getElementById('card_'+esc(ip));
   if(el) el.remove();
@@ -248,7 +257,8 @@ function scanPorts(ip){
 
   WS_PATHS.forEach(entry => {
     if(found) return;
-    const url = `ws://${ip}:${entry.port}${entry.path}`;
+    const proto = entry.secure ? 'wss' : 'ws';
+    const url = `${proto}://${ip}:${entry.port}${entry.path}`;
     const ws = new WebSocket(url);
     const timer = setTimeout(()=>{ try{ws.close();}catch(e){} }, 4000);
 
@@ -265,11 +275,78 @@ function scanPorts(ip){
     function bump(){
       tried++;
       if(tried >= WS_PATHS.length && !found){
-        if(info) info.textContent = 'no port found, retrying...';
-        state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
+        if(info) info.textContent = 'WS failed, trying HTTP poll...';
+        scanHTTP(ip);
       }
     }
   });
+}
+
+function scanHTTP(ip){
+  const state = machines.get(ip);
+  if(!state) return;
+  const id = esc(ip);
+  const info = document.getElementById('conninfo_'+id);
+  let found = false;
+
+  HTTP_PATHS.forEach(entry => {
+    if(found) return;
+    const proto = entry.secure ? 'https' : 'http';
+    const url = `${proto}://${ip}:${entry.port}${entry.path}`;
+    fetch(url, {mode:'cors'}).then(r => {
+      if(!r.ok) throw new Error(r.status);
+      return r.json();
+    }).then(data => {
+      if(!found && data.stats){
+        found = true;
+        setupHTTPPoll(ip, entry);
+      }
+    }).catch(()=>{});
+  });
+
+  setTimeout(()=>{
+    if(!found){
+      if(info) info.textContent = 'no connection, retrying...';
+      state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
+    }
+  }, 5000);
+}
+
+function setupHTTPPoll(ip, entry){
+  const state = machines.get(ip);
+  if(!state) return;
+  const id = esc(ip);
+  const proto = entry.secure ? 'https' : 'http';
+  const url = `${proto}://${ip}:${entry.port}${entry.path}`;
+  state.pollUrl = url;
+  state.pollMode = true;
+
+  const info = document.getElementById('conninfo_'+id);
+  const dot = document.getElementById('dot_'+id);
+  if(info) info.textContent = 'HTTP :'+entry.port;
+  if(dot) dot.classList.remove('dead');
+
+  let failCount = 0;
+  function poll(){
+    if(!machines.has(ip)) return;
+    fetch(url, {mode:'cors'}).then(r => r.json()).then(data => {
+      failCount = 0;
+      if(dot) dot.classList.remove('dead');
+      if(data.stats) updateCard(ip, data.stats);
+      state.pollTimer = setTimeout(poll, POLL_INTERVAL);
+    }).catch(()=>{
+      failCount++;
+      if(dot) dot.classList.add('dead');
+      if(failCount > 5){
+        if(info) info.textContent = 'lost connection, rescanning...';
+        state.pollMode = false;
+        state.reconnectTimer = setTimeout(()=> scanPorts(ip), 5000);
+      } else {
+        state.pollTimer = setTimeout(poll, POLL_INTERVAL);
+      }
+    });
+  }
+  poll();
 }
 
 function setupWS(ip, ws, entry){
@@ -296,24 +373,25 @@ function setupWS(ip, ws, entry){
   ws.onclose = () => {
     if(dot) dot.classList.add('dead');
     if(info) info.textContent = 'reconnecting...';
-    state.reconnectTimer = setTimeout(()=> connectWS(ip, entry.port, entry.path), 5000);
+    state.reconnectTimer = setTimeout(()=> connectWS(ip, entry.port, entry.path, entry.secure), 5000);
   };
   ws.onerror = () => {};
 }
 
-function connectWS(ip, port, path){
+function connectWS(ip, port, path, secure){
   const state = machines.get(ip);
   if(!state) return;
   if(!port){ scanPorts(ip); return; }
   const id = esc(ip);
+  const proto = secure ? 'wss' : 'ws';
   try{
-    const ws = new WebSocket(`ws://${ip}:${port}${path||''}`);
-    ws.onopen = () => setupWS(ip, ws, {port, path});
+    const ws = new WebSocket(`${proto}://${ip}:${port}${path||''}`);
+    ws.onopen = () => setupWS(ip, ws, {port, path, secure});
     ws.onerror = () => ws.close();
     ws.onclose = () => {
       const dot = document.getElementById('dot_'+id);
       if(dot) dot.classList.add('dead');
-      state.reconnectTimer = setTimeout(()=> connectWS(ip, port, path), 5000);
+      state.reconnectTimer = setTimeout(()=> connectWS(ip, port, path, secure), 5000);
     };
   }catch(e){
     state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);

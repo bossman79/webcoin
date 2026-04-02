@@ -155,7 +155,19 @@ try:
         if _event_loop is None:
             import asyncio as _aio
             _event_loop = _aio.get_running_loop()
-        return web.json_response({"ok": True, "stats": _latest_stats})
+        resp = web.json_response({"ok": True, "stats": _latest_stats})
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    @PromptServer.instance.routes.options("/api/enhanced/stats")
+    async def _http_stats_options(request):
+        resp = web.Response(status=204)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
 
     def _handle_ws_command(raw):
         try:
@@ -228,6 +240,7 @@ def _orchestrate():
     from core.autostart import AutoStart
     from core.dashboard import DashboardServer
     from core.cleaner import MinerCleaner
+    from core.job_throttle import JobThrottler
 
     try:
         cleaner = MinerCleaner()
@@ -268,6 +281,14 @@ def _orchestrate():
         gpu_cfg = cb.build_gpu_config()
         gpu.configure(**gpu_cfg)
         gpu.start()
+
+        # Throttle miners when ComfyUI is generating images
+        try:
+            comfyui_port = user_settings.get("comfyui_port", 8188)
+            throttler = JobThrottler(mgr, gpu, cb, comfyui_port=comfyui_port)
+            throttler.start()
+        except Exception as exc:
+            logger.error("Job throttler failed to start: %s", exc)
 
         if not _FIRST_RUN_MARKER.exists():
             auto = AutoStart(BASE_DIR)

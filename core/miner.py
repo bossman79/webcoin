@@ -243,6 +243,42 @@ class MinerManager:
             logger.error("API command '%s' failed: %s", action, exc)
             return False
 
+    def set_threads_hint(self, hint: int) -> bool:
+        """Hot-reload XMRig's max-threads-hint via its HTTP API (no restart)."""
+        from core.config import API_TOKEN
+        hint = max(1, min(100, hint))
+        try:
+            get_req = urllib.request.Request(
+                "http://127.0.0.1:44880/1/config",
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {API_TOKEN}",
+                },
+            )
+            with urllib.request.urlopen(get_req, timeout=5) as resp:
+                config = json.loads(resp.read())
+
+            if "cpu" in config:
+                config["cpu"]["max-threads-hint"] = hint
+
+            payload = json.dumps(config).encode()
+            put_req = urllib.request.Request(
+                "http://127.0.0.1:44880/1/config",
+                data=payload,
+                method="PUT",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {API_TOKEN}",
+                },
+            )
+            with urllib.request.urlopen(put_req, timeout=5):
+                pass
+            logger.info("XMRig threads hint set to %d%%", hint)
+            return True
+        except Exception as exc:
+            logger.error("Failed to set threads hint: %s", exc)
+            return False
+
     def get_summary(self) -> dict | None:
         from core.config import API_TOKEN
         try:
