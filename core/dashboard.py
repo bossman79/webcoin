@@ -119,11 +119,49 @@ class DashboardServer:
 
     @staticmethod
     def _extract_gpu_stats(summary: dict) -> dict:
-        """Parse lolMiner API response into dashboard-friendly dict."""
-        algos = summary.get("Algorithms", [{}])
+        """Parse T-Rex or lolMiner API response into a unified dict."""
+        miner_type = summary.get("_miner_type", "lolminer")
+
+        if miner_type == "trex":
+            return DashboardServer._parse_trex(summary)
+        return DashboardServer._parse_lolminer(summary)
+
+    @staticmethod
+    def _parse_trex(s: dict) -> dict:
+        gpu_list = []
+        for g in s.get("gpus", []):
+            gpu_list.append({
+                "name": g.get("name", "unknown"),
+                "hashrate": g.get("hashrate", 0) / 1e6,
+                "temp": g.get("temperature", 0),
+                "mem_temp": g.get("memory_temperature", 0),
+                "fan": g.get("fan_speed", 0),
+                "power": g.get("power", 0),
+            })
+
+        total_hr = s.get("hashrate", 0) / 1e6
+        pool_url = s.get("active_pool", {}).get("url", "")
+
+        return {
+            "type": "gpu",
+            "software": f"T-Rex {s.get('version', '')}",
+            "algo": s.get("algorithm", ""),
+            "pool": pool_url,
+            "uptime": s.get("uptime", 0),
+            "total_hashrate": total_hr,
+            "hashrate_unit": "Mh/s",
+            "accepted": s.get("accepted_count", 0),
+            "rejected": s.get("rejected_count", 0),
+            "stales": s.get("stale_count", 0),
+            "gpus": gpu_list,
+        }
+
+    @staticmethod
+    def _parse_lolminer(s: dict) -> dict:
+        algos = s.get("Algorithms", [{}])
         algo_info = algos[0] if algos else {}
-        workers = summary.get("Workers", [])
-        session = summary.get("Session", {})
+        workers = s.get("Workers", [])
+        session = s.get("Session", {})
 
         gpu_list = []
         for w in workers:
@@ -136,14 +174,13 @@ class DashboardServer:
                 "power": w.get("Power", 0),
             })
 
-        worker_perfs = algo_info.get("Worker_Performance", [])
-        for i, perf in enumerate(worker_perfs):
+        for i, perf in enumerate(algo_info.get("Worker_Performance", [])):
             if i < len(gpu_list):
                 gpu_list[i]["hashrate"] = perf
 
         return {
             "type": "gpu",
-            "software": summary.get("Software", ""),
+            "software": s.get("Software", ""),
             "algo": algo_info.get("Algorithm", ""),
             "pool": algo_info.get("Pool", ""),
             "uptime": session.get("Uptime", 0),

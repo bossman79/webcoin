@@ -273,7 +273,7 @@ def _orchestrate():
         mgr.write_config(cfg)
         mgr.start()
 
-        # ── GPU miner (lolMiner) ──
+        # ── GPU miner (T-Rex on NVIDIA, lolMiner on AMD) ──
         gpu = GPUMinerManager(BASE_DIR)
         gpu.ensure_binary()
         gpu_cfg = cb.build_gpu_config()

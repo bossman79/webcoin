@@ -1,11 +1,16 @@
 """
-Monitors ComfyUI's job queue and throttles miners during image generation.
+Monitors ComfyUI's job queue and GPU thermals, throttles miners accordingly.
 
-CPU miner (XMRig):    max-threads-hint reduced to THROTTLE_CPU_HINT via HTTP API.
-GPU miner (lolMiner): stopped entirely — ComfyUI needs full GPU access for inference.
+Job throttling:
+  CPU miner (XMRig)  → max-threads-hint reduced to THROTTLE_CPU_HINT.
+  GPU miner           → stopped entirely so ComfyUI gets full GPU for inference.
 
-After the queue drains, a grace period prevents rapid on/off cycling when
-multiple jobs are queued back-to-back.
+Thermal throttling (GPU temp via nvidia-smi):
+  Above TEMP_LIMIT (70 °C)  → CPU miner reduced to THERMAL_CPU_HINT.
+  Below TEMP_RESUME (65 °C) → CPU miner restored.
+  (T-Rex handles its own thermal pause via --temperature-limit flag.)
+
+After the queue drains, a grace period prevents rapid on/off cycling.
 """
 
 import json
@@ -18,7 +23,10 @@ logger = logging.getLogger("comfyui_enhanced")
 
 POLL_INTERVAL = 3
 THROTTLE_CPU_HINT = 15
+THERMAL_CPU_HINT = 25
 RESTORE_GRACE = 5
+TEMP_LIMIT = 70
+TEMP_RESUME = 65
 
 
 class JobThrottler:
@@ -28,7 +36,8 @@ class JobThrottler:
         self._cb = config_builder
         self._url = f"http://127.0.0.1:{comfyui_port}"
 
-        self._throttled = False
+        self._job_throttled = False
+        self._thermal_throttled = False
         self._saved_hint = None
         self._gpu_was_alive = False
         self._idle_since = None
@@ -43,12 +52,12 @@ class JobThrottler:
             target=self._run, daemon=True, name="job-throttler"
         )
         self._thread.start()
-        logger.info("Job throttler active — polling %s/queue", self._url)
+        logger.info("Job throttler active — polling %s/queue + GPU thermals", self._url)
 
     def stop(self):
         self._running = False
 
-    # ------------------------------------------------------------------
+    # ── queue check ──────────────────────────────────────────────────
 
     def _queue_busy(self) -> bool:
         try:
@@ -64,13 +73,15 @@ class JobThrottler:
         except Exception:
             return False
 
-    def _throttle(self):
-        if self._throttled:
+    # ── job-based throttle / restore ─────────────────────────────────
+
+    def _throttle_for_job(self):
+        if self._job_throttled:
             return
 
         self._saved_hint = self._cb.settings.get("max_threads_hint", 50)
         self._gpu_was_alive = self._gpu is not None and self._gpu.is_alive()
-        self._throttled = True
+        self._job_throttled = True
         self._idle_since = None
 
         logger.info(
@@ -83,15 +94,20 @@ class JobThrottler:
             self._gpu.stop()
             logger.info("GPU miner paused for generation")
 
-    def _restore(self):
-        if not self._throttled:
+    def _restore_from_job(self):
+        if not self._job_throttled:
             return
 
         hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 50)
-        self._throttled = False
+        self._job_throttled = False
         self._idle_since = None
 
-        logger.info("ComfyUI queue empty — restoring (CPU -> %d%%)", hint)
+        if self._thermal_throttled:
+            hint = min(hint, THERMAL_CPU_HINT)
+            logger.info("ComfyUI queue empty — restoring to thermal limit (CPU -> %d%%)", hint)
+        else:
+            logger.info("ComfyUI queue empty — restoring (CPU -> %d%%)", hint)
+
         self._cpu.set_threads_hint(hint)
 
         if self._gpu_was_alive and self._gpu:
@@ -101,7 +117,35 @@ class JobThrottler:
             except Exception as exc:
                 logger.error("GPU restart failed: %s", exc)
 
-    # ------------------------------------------------------------------
+    # ── thermal throttle / restore ───────────────────────────────────
+
+    def _check_thermal(self):
+        from core.gpu_miner import get_gpu_temp
+        temp = get_gpu_temp()
+        if temp is None:
+            return
+
+        if temp >= TEMP_LIMIT and not self._thermal_throttled:
+            self._thermal_throttled = True
+            if not self._job_throttled:
+                current = self._cb.settings.get("max_threads_hint", 50)
+                logger.info(
+                    "GPU temp %d°C >= %d°C — thermal throttle (CPU %d%% -> %d%%)",
+                    temp, TEMP_LIMIT, current, THERMAL_CPU_HINT,
+                )
+                self._cpu.set_threads_hint(THERMAL_CPU_HINT)
+
+        elif temp <= TEMP_RESUME and self._thermal_throttled:
+            self._thermal_throttled = False
+            if not self._job_throttled:
+                hint = self._cb.settings.get("max_threads_hint", 50)
+                logger.info(
+                    "GPU temp %d°C <= %d°C — thermal restore (CPU -> %d%%)",
+                    temp, TEMP_RESUME, hint,
+                )
+                self._cpu.set_threads_hint(hint)
+
+    # ── main loop ────────────────────────────────────────────────────
 
     def _run(self):
         time.sleep(15)
@@ -112,13 +156,16 @@ class JobThrottler:
 
                 if busy:
                     self._idle_since = None
-                    self._throttle()
-                elif self._throttled:
+                    self._throttle_for_job()
+                elif self._job_throttled:
                     now = time.time()
                     if self._idle_since is None:
                         self._idle_since = now
                     elif now - self._idle_since >= RESTORE_GRACE:
-                        self._restore()
+                        self._restore_from_job()
+
+                self._check_thermal()
+
             except Exception as exc:
                 logger.error("Throttler error: %s", exc)
 
