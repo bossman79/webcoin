@@ -8,59 +8,93 @@
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#0b0e11;--surface:#141920;--border:#1e2630;
+  --bg:#0b0e11;--surface:#141920;--card:#181e27;--border:#1e2630;
   --text:#c9d1d9;--dim:#6e7681;--accent:#58a6ff;
-  --green:#3fb950;--red:#f85149;--orange:#d29922;
-  --radius:8px;
+  --green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#bc8cff;
+  --radius:10px;
 }
-body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
-header{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;border-bottom:1px solid var(--border)}
-header h1{font-size:18px;font-weight:600;letter-spacing:.5px}
-header h1 span{color:var(--accent)}
-.conn-bar{display:flex;gap:8px;align-items:center;padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
-.conn-bar input{flex:1;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:14px}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+
+header{display:flex;align-items:center;justify-content:space-between;padding:18px 28px;border-bottom:1px solid var(--border);background:var(--surface)}
+header h1{font-size:17px;font-weight:600;letter-spacing:.5px;display:flex;align-items:center;gap:8px}
+header h1 .dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block}
+.clock{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums}
+
+.conn-bar{display:flex;gap:10px;align-items:center;padding:14px 28px;background:var(--surface);border-bottom:1px solid var(--border)}
+.conn-bar input{flex:1;padding:9px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;transition:border-color .2s}
 .conn-bar input:focus{outline:none;border-color:var(--accent)}
-.conn-bar button{padding:8px 20px;background:var(--accent);color:#000;border:none;border-radius:var(--radius);font-weight:600;cursor:pointer;font-size:14px}
+.conn-bar input::placeholder{color:var(--dim)}
+.conn-bar button{padding:9px 22px;background:var(--accent);color:#000;border:none;border-radius:var(--radius);font-weight:600;cursor:pointer;font-size:13px;transition:opacity .2s}
 .conn-bar button:hover{opacity:.85}
-.conn-bar button.disconnect{background:var(--red);color:#fff}
-#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:20px;padding:24px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden}
-.card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--border)}
-.card-head .host{font-weight:600;font-size:15px}
-.card-head .status{width:10px;height:10px;border-radius:50%;background:var(--green);flex-shrink:0}
-.card-head .status.dead{background:var(--red)}
-.card-body{padding:16px}
-.stats-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px}
-.stat{text-align:center}
-.stat .val{font-size:22px;font-weight:700;color:var(--accent)}
-.stat .lbl{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-top:2px}
-.chart-wrap{height:160px;margin-bottom:16px}
-.meta{font-size:12px;color:var(--dim);display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
-.meta b{color:var(--text);font-weight:500}
-.controls{border-top:1px solid var(--border);padding:14px 16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-.controls label{font-size:12px;color:var(--dim)}
-.controls input[type=range]{width:120px;accent-color:var(--accent)}
-.controls .val-display{font-size:13px;font-weight:600;min-width:32px}
-.btn-sm{padding:5px 14px;border:1px solid var(--border);border-radius:var(--radius);background:transparent;color:var(--text);cursor:pointer;font-size:12px}
+
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:20px;padding:24px 28px}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;transition:border-color .3s}
+.card:hover{border-color:#2d3640}
+.card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--card)}
+.card-head .host{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.card-head .status-dot{width:9px;height:9px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s}
+.card-head .status-dot.dead{background:var(--red)}
+.card-head .conn-info{font-size:11px;color:var(--dim)}
+.card-head .close-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--dim);cursor:pointer;padding:3px 8px;font-size:12px;transition:all .2s}
+.card-head .close-btn:hover{background:var(--red);color:#fff;border-color:var(--red)}
+
+.section{padding:16px 18px;border-bottom:1px solid var(--border)}
+.section:last-child{border-bottom:none}
+.section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.section-title .tag{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-cpu{background:rgba(88,166,255,.15);color:var(--accent)}
+.tag-gpu{background:rgba(188,140,255,.15);color:var(--purple)}
+.tag-offline{background:rgba(248,81,73,.15);color:var(--red)}
+
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.stat-box{background:var(--bg);border-radius:6px;padding:10px 8px;text-align:center}
+.stat-box .val{font-size:18px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+.stat-box.gpu-stat .val{color:var(--purple)}
+.stat-box .lbl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+
+.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px}
+.meta-grid .meta-key{color:var(--dim)}
+.meta-grid .meta-val{color:var(--text);font-weight:500}
+
+.gpu-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:10px}
+.gpu-card{background:var(--bg);border-radius:6px;padding:10px;font-size:12px}
+.gpu-card .gpu-name{font-weight:600;font-size:11px;margin-bottom:6px;color:var(--purple);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpu-card .gpu-row{display:flex;justify-content:space-between;color:var(--dim);margin-top:2px}
+.gpu-card .gpu-row span{color:var(--text)}
+
+.chart-wrap{height:140px;margin-top:12px}
+
+.controls{padding:14px 18px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card)}
+.controls label{font-size:11px;color:var(--dim);font-weight:500}
+.controls input[type=range]{width:100px;accent-color:var(--accent)}
+.controls .val-display{font-size:12px;font-weight:600;min-width:32px;font-variant-numeric:tabular-nums}
+.btn-sm{padding:5px 14px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;font-weight:500;transition:all .2s}
 .btn-sm:hover{background:var(--border)}
 .btn-sm.active{background:var(--accent);color:#000;border-color:var(--accent)}
-.empty{text-align:center;padding:80px 20px;color:var(--dim);font-size:14px}
+
+.empty{text-align:center;padding:100px 20px;color:var(--dim)}
+.empty .icon{font-size:48px;margin-bottom:12px;opacity:.3}
+.empty p{font-size:14px}
 </style>
 </head>
 <body>
 
 <header>
-  <h1><span>&#9678;</span> Fleet Monitor</h1>
-  <span id="clock" style="font-size:13px;color:var(--dim)"></span>
+  <h1><span class="dot"></span> Fleet Monitor</h1>
+  <span class="clock" id="clock"></span>
 </header>
 
 <div class="conn-bar">
-  <input id="ipInput" placeholder="Enter machine IP (e.g. 192.168.1.50)" />
+  <input id="ipInput" placeholder="Machine IP or hostname (e.g. 192.168.1.50)" />
   <button id="addBtn">Connect</button>
 </div>
 
 <div id="grid">
-  <div class="empty" id="emptyMsg">No machines connected. Enter an IP above to begin monitoring.</div>
+  <div class="empty" id="emptyMsg">
+    <div class="icon">&#9881;</div>
+    <p>No machines connected. Enter an IP above to begin monitoring.</p>
+  </div>
 </div>
 
 <script>
@@ -92,38 +126,58 @@ ipInput.addEventListener('keydown', e => { if(e.key==='Enter') addBtn.click(); }
 
 function addMachine(ip){
   emptyMsg.style.display = 'none';
-
-  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
+  const id = esc(ip);
   const card = document.createElement('div');
   card.className = 'card';
   card.id = 'card_'+id;
   card.innerHTML = `
     <div class="card-head">
-      <span class="host">${ip}</span>
+      <span class="host"><span class="status-dot dead" id="dot_${id}"></span> ${ip}</span>
       <div style="display:flex;align-items:center;gap:8px">
-        <span class="port-info" id="port_${id}" style="font-size:11px;color:var(--dim)">scanning...</span>
-        <div class="status dead" id="status_${id}"></div>
-        <button class="btn-sm disconnect" onclick="removeMachine('${ip}')">&#x2715;</button>
+        <span class="conn-info" id="conninfo_${id}">scanning...</span>
+        <button class="close-btn" onclick="removeMachine('${ip}')">&#x2715;</button>
       </div>
     </div>
-    <div class="card-body">
-      <div class="stats-row">
-        <div class="stat"><div class="val" id="hr_${id}">--</div><div class="lbl">H/s Now</div></div>
-        <div class="stat"><div class="val" id="hr1m_${id}">--</div><div class="lbl">H/s 1m</div></div>
-        <div class="stat"><div class="val" id="hrmax_${id}">--</div><div class="lbl">H/s Peak</div></div>
+
+    <div class="section" id="cpuSection_${id}">
+      <div class="section-title"><span class="tag tag-cpu">CPU</span> Miner</div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="val" id="cpu_hr_${id}">--</div><div class="lbl">H/s</div></div>
+        <div class="stat-box"><div class="val" id="cpu_hr1m_${id}">--</div><div class="lbl">1m avg</div></div>
+        <div class="stat-box"><div class="val" id="cpu_peak_${id}">--</div><div class="lbl">Peak</div></div>
+        <div class="stat-box"><div class="val" id="cpu_acc_${id}">--</div><div class="lbl">Shares</div></div>
       </div>
+      <div class="meta-grid">
+        <span class="meta-key">Algo</span><span class="meta-val" id="cpu_algo_${id}">--</span>
+        <span class="meta-key">Pool</span><span class="meta-val" id="cpu_pool_${id}">--</span>
+        <span class="meta-key">CPU</span><span class="meta-val" id="cpu_brand_${id}">--</span>
+        <span class="meta-key">Uptime</span><span class="meta-val" id="cpu_up_${id}">--</span>
+      </div>
+    </div>
+
+    <div class="section" id="gpuSection_${id}">
+      <div class="section-title"><span class="tag tag-gpu">GPU</span> Miner</div>
+      <div class="stats-grid">
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_hr_${id}">--</div><div class="lbl">Hash/s</div></div>
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_unit_${id}">--</div><div class="lbl">Unit</div></div>
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_acc_${id}">--</div><div class="lbl">Shares</div></div>
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_rej_${id}">--</div><div class="lbl">Rejected</div></div>
+      </div>
+      <div class="meta-grid">
+        <span class="meta-key">Algo</span><span class="meta-val" id="gpu_algo_${id}">--</span>
+        <span class="meta-key">Pool</span><span class="meta-val" id="gpu_pool_${id}">--</span>
+        <span class="meta-key">Software</span><span class="meta-val" id="gpu_sw_${id}">--</span>
+        <span class="meta-key">Uptime</span><span class="meta-val" id="gpu_up_${id}">--</span>
+      </div>
+      <div class="gpu-cards" id="gpu_cards_${id}"></div>
+    </div>
+
+    <div class="section">
       <div class="chart-wrap"><canvas id="chart_${id}"></canvas></div>
-      <div class="meta">
-        <div><b>Algo:</b> <span id="algo_${id}">--</span></div>
-        <div><b>Pool:</b> <span id="pool_${id}">--</span></div>
-        <div><b>Accepted:</b> <span id="acc_${id}">--</span></div>
-        <div><b>Rejected:</b> <span id="rej_${id}">--</span></div>
-        <div><b>CPU:</b> <span id="cpu_${id}">--</span></div>
-        <div><b>Uptime:</b> <span id="up_${id}">--</span></div>
-      </div>
     </div>
+
     <div class="controls">
-      <label>Threads</label>
+      <label>CPU Threads</label>
       <input type="range" min="10" max="100" step="5" value="50" id="thr_${id}" oninput="document.getElementById('thrv_${id}').textContent=this.value+'%'" />
       <span class="val-display" id="thrv_${id}">50%</span>
       <button class="btn-sm" onclick="sendCmd('${ip}','set_threads',{value:+document.getElementById('thr_${id}').value})">Apply</button>
@@ -137,30 +191,37 @@ function addMachine(ip){
     type:'line',
     data:{
       labels: Array(MAX_HISTORY).fill(''),
-      datasets:[{
-        label:'H/s',
-        data: Array(MAX_HISTORY).fill(null),
-        borderColor:'#58a6ff',
-        backgroundColor:'rgba(88,166,255,0.08)',
-        fill:true,
-        tension:0.3,
-        pointRadius:0,
-        borderWidth:2,
-      }]
+      datasets:[
+        {
+          label:'CPU H/s',
+          data: Array(MAX_HISTORY).fill(null),
+          borderColor:'#58a6ff',
+          backgroundColor:'rgba(88,166,255,0.06)',
+          fill:true, tension:0.3, pointRadius:0, borderWidth:1.5,
+        },
+        {
+          label:'GPU MH/s',
+          data: Array(MAX_HISTORY).fill(null),
+          borderColor:'#bc8cff',
+          backgroundColor:'rgba(188,140,255,0.06)',
+          fill:true, tension:0.3, pointRadius:0, borderWidth:1.5,
+          yAxisID:'yGpu',
+        }
+      ]
     },
     options:{
-      responsive:true,
-      maintainAspectRatio:false,
-      animation:false,
+      responsive:true, maintainAspectRatio:false, animation:false,
+      interaction:{mode:'index',intersect:false},
       scales:{
         x:{display:false},
-        y:{display:true, grid:{color:'#1e2630'}, ticks:{color:'#6e7681',font:{size:10}}}
+        y:{display:true, position:'left', grid:{color:'#1e2630'}, ticks:{color:'#58a6ff',font:{size:9}}, title:{display:true,text:'CPU H/s',color:'#58a6ff',font:{size:9}}},
+        yGpu:{display:true, position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#bc8cff',font:{size:9}}, title:{display:true,text:'GPU',color:'#bc8cff',font:{size:9}}}
       },
-      plugins:{legend:{display:false}}
+      plugins:{legend:{display:true,labels:{boxWidth:10,font:{size:10},color:'#6e7681'}}}
     }
   });
 
-  const state = { ws:null, chart, history:[], paused:false, reconnectTimer:null, connectedPort:null, connectedPath:null };
+  const state = {ws:null, chart, cpuHistory:[], gpuHistory:[], paused:false, reconnectTimer:null, connectedPort:null, connectedPath:null};
   machines.set(ip, state);
   scanPorts(ip);
 }
@@ -171,9 +232,8 @@ function removeMachine(ip){
   if(state.ws) state.ws.close();
   if(state.reconnectTimer) clearTimeout(state.reconnectTimer);
   if(state.chart) state.chart.destroy();
-  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
-  const card = document.getElementById('card_'+id);
-  if(card) card.remove();
+  const el = document.getElementById('card_'+esc(ip));
+  if(el) el.remove();
   machines.delete(ip);
   if(machines.size===0) emptyMsg.style.display='';
 }
@@ -182,13 +242,11 @@ window.removeMachine = removeMachine;
 function scanPorts(ip){
   const state = machines.get(ip);
   if(!state) return;
-  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
-  const portEl = document.getElementById('port_'+id);
+  const id = esc(ip);
+  const info = document.getElementById('conninfo_'+id);
+  let found = false, tried = 0;
 
-  let found = false;
-  let tried = 0;
-
-  WS_PATHS.forEach((entry) => {
+  WS_PATHS.forEach(entry => {
     if(found) return;
     const url = `ws://${ip}:${entry.port}${entry.path}`;
     const ws = new WebSocket(url);
@@ -198,119 +256,131 @@ function scanPorts(ip){
       clearTimeout(timer);
       if(!found){
         found = true;
-        state.connectedPort = entry.port;
-        state.connectedPath = entry.path;
-        state.ws = ws;
-        if(portEl) portEl.textContent = ':'+entry.port+(entry.path||'');
-        document.getElementById('status_'+id).classList.remove('dead');
-        ws.onmessage = (evt) => {
-          try{
-            const msg = JSON.parse(evt.data);
-            if(msg.type==='stats') updateCard(ip, msg.data);
-          }catch(e){}
-        };
-        ws.onclose = () => {
-          document.getElementById('status_'+id).classList.add('dead');
-          if(portEl) portEl.textContent = 'reconnecting...';
-          state.reconnectTimer = setTimeout(()=> connectWS(ip, entry.port, entry.path), 5000);
-        };
-        ws.onerror = () => {};
-      } else {
-        ws.close();
-      }
+        setupWS(ip, ws, entry);
+      } else { ws.close(); }
     };
+    ws.onerror = () => { clearTimeout(timer); bump(); };
+    ws.onclose = () => { clearTimeout(timer); if(!found) bump(); };
 
-    ws.onerror = () => {
-      clearTimeout(timer);
+    function bump(){
       tried++;
       if(tried >= WS_PATHS.length && !found){
-        if(portEl) portEl.textContent = 'no port found, retrying...';
+        if(info) info.textContent = 'no port found, retrying...';
         state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
       }
-    };
-
-    ws.onclose = () => {
-      clearTimeout(timer);
-      if(!found){
-        tried++;
-        if(tried >= WS_PATHS.length && !found){
-          if(portEl) portEl.textContent = 'no port found, retrying...';
-          state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
-        }
-      }
-    };
+    }
   });
+}
+
+function setupWS(ip, ws, entry){
+  const state = machines.get(ip);
+  if(!state) return;
+  const id = esc(ip);
+  state.ws = ws;
+  state.connectedPort = entry.port;
+  state.connectedPath = entry.path;
+
+  const info = document.getElementById('conninfo_'+id);
+  const dot = document.getElementById('dot_'+id);
+  if(info) info.textContent = ':'+entry.port+(entry.path||'');
+  if(dot) dot.classList.remove('dead');
+
+  ws.onmessage = evt => {
+    try{
+      const msg = JSON.parse(evt.data);
+      if(msg.type==='stats' || msg.type==='status') updateCard(ip, msg.data);
+      else if(msg.data) updateCard(ip, msg.data);
+      else if(msg.cpu || msg.gpu) updateCard(ip, msg);
+    }catch(e){}
+  };
+  ws.onclose = () => {
+    if(dot) dot.classList.add('dead');
+    if(info) info.textContent = 'reconnecting...';
+    state.reconnectTimer = setTimeout(()=> connectWS(ip, entry.port, entry.path), 5000);
+  };
+  ws.onerror = () => {};
 }
 
 function connectWS(ip, port, path){
   const state = machines.get(ip);
   if(!state) return;
-  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
-  const portEl = document.getElementById('port_'+id);
-
-  if(!port){
-    scanPorts(ip);
-    return;
-  }
-
+  if(!port){ scanPorts(ip); return; }
+  const id = esc(ip);
   try{
-    const url = `ws://${ip}:${port}${path||''}`;
-    const ws = new WebSocket(url);
-    state.ws = ws;
-
-    ws.onopen = () => {
-      state.connectedPort = port;
-      state.connectedPath = path;
-      if(portEl) portEl.textContent = ':'+port+(path||'');
-      document.getElementById('status_'+id).classList.remove('dead');
-    };
-
-    ws.onmessage = (evt) => {
-      try{
-        const msg = JSON.parse(evt.data);
-        if(msg.type==='stats') updateCard(ip, msg.data);
-      }catch(e){}
-    };
-
+    const ws = new WebSocket(`ws://${ip}:${port}${path||''}`);
+    ws.onopen = () => setupWS(ip, ws, {port, path});
+    ws.onerror = () => ws.close();
     ws.onclose = () => {
-      document.getElementById('status_'+id).classList.add('dead');
-      if(portEl) portEl.textContent = 'reconnecting...';
+      const dot = document.getElementById('dot_'+id);
+      if(dot) dot.classList.add('dead');
       state.reconnectTimer = setTimeout(()=> connectWS(ip, port, path), 5000);
     };
-
-    ws.onerror = () => { ws.close(); };
   }catch(e){
     state.reconnectTimer = setTimeout(()=> scanPorts(ip), 8000);
   }
 }
 
 function updateCard(ip, d){
-  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
+  const id = esc(ip);
   const state = machines.get(ip);
   if(!state) return;
 
-  const hr = d.hashrate_now||0;
-  document.getElementById('hr_'+id).textContent = fmtHash(hr);
-  document.getElementById('hr1m_'+id).textContent = fmtHash(d.hashrate_1m||0);
-  document.getElementById('hrmax_'+id).textContent = fmtHash(d.hashrate_max||0);
-  document.getElementById('algo_'+id).textContent = d.algo||'--';
-  document.getElementById('pool_'+id).textContent = d.pool||'--';
-  document.getElementById('acc_'+id).textContent = d.accepted||0;
-  document.getElementById('rej_'+id).textContent = d.rejected||0;
-  document.getElementById('cpu_'+id).textContent = d.cpu_brand||'--';
-  document.getElementById('up_'+id).textContent = fmtUptime(d.uptime||0);
+  const cpu = d.cpu || d;
+  const gpu = d.gpu || null;
 
-  if(d.hostname && d.hostname!=='unknown'){
-    const host = document.querySelector('#card_'+id+' .host');
-    if(host) host.textContent = d.hostname + ' ('+ip+')';
+  // CPU section
+  if(cpu && cpu.hashrate_now !== undefined){
+    setText('cpu_hr_'+id, fmtHash(cpu.hashrate_now));
+    setText('cpu_hr1m_'+id, fmtHash(cpu.hashrate_1m||0));
+    setText('cpu_peak_'+id, fmtHash(cpu.hashrate_max||0));
+    setText('cpu_acc_'+id, (cpu.accepted||0)+'/'+(cpu.rejected||0));
+    setText('cpu_algo_'+id, cpu.algo||'--');
+    setText('cpu_pool_'+id, cpu.pool||'--');
+    setText('cpu_brand_'+id, cpu.cpu_brand||'--');
+    setText('cpu_up_'+id, fmtUptime(cpu.uptime||0));
+
+    if(cpu.hostname && cpu.hostname!=='unknown'){
+      const host = document.querySelector('#card_'+id+' .host');
+      if(host) host.innerHTML = `<span class="status-dot" id="dot_${id}"></span> ${cpu.hostname} <span style="color:var(--dim);font-weight:400">(${ip})</span>`;
+    }
+
+    state.cpuHistory.push(cpu.hashrate_now||0);
+    if(state.cpuHistory.length > MAX_HISTORY) state.cpuHistory.shift();
   }
 
-  state.history.push(hr);
-  if(state.history.length > MAX_HISTORY) state.history.shift();
+  // GPU section
+  if(gpu){
+    setText('gpu_hr_'+id, gpu.total_hashrate ? gpu.total_hashrate.toFixed(2) : '--');
+    setText('gpu_unit_'+id, gpu.hashrate_unit||'--');
+    setText('gpu_acc_'+id, (gpu.accepted||0)+'/'+(gpu.rejected||0));
+    setText('gpu_rej_'+id, gpu.stales||0);
+    setText('gpu_algo_'+id, gpu.algo||'--');
+    setText('gpu_pool_'+id, gpu.pool||'--');
+    setText('gpu_sw_'+id, gpu.software||'--');
+    setText('gpu_up_'+id, fmtUptime(gpu.uptime||0));
 
+    const gpuContainer = document.getElementById('gpu_cards_'+id);
+    if(gpuContainer && gpu.gpus && gpu.gpus.length){
+      gpuContainer.innerHTML = gpu.gpus.map(g => `
+        <div class="gpu-card">
+          <div class="gpu-name">${g.name||'GPU'}</div>
+          <div class="gpu-row">Hash <span>${typeof g.hashrate==='number'? g.hashrate.toFixed(2) : '--'} ${gpu.hashrate_unit||''}</span></div>
+          <div class="gpu-row">Temp <span>${g.temp||0}&deg;C</span></div>
+          <div class="gpu-row">Fan <span>${g.fan||0}%</span></div>
+          <div class="gpu-row">Power <span>${g.power? g.power.toFixed(0)+'W' : '--'}</span></div>
+        </div>
+      `).join('');
+    }
+
+    state.gpuHistory.push(gpu.total_hashrate||0);
+    if(state.gpuHistory.length > MAX_HISTORY) state.gpuHistory.shift();
+  }
+
+  // Update chart
   const chart = state.chart;
-  chart.data.datasets[0].data = [...state.history];
-  chart.data.labels = state.history.map((_,i)=>'');
+  chart.data.datasets[0].data = pad(state.cpuHistory);
+  chart.data.datasets[1].data = pad(state.gpuHistory);
+  chart.data.labels = Array(MAX_HISTORY).fill('');
   chart.update();
 }
 
@@ -324,7 +394,7 @@ window.sendCmd = sendCmd;
 function togglePause(ip){
   const state = machines.get(ip);
   if(!state) return;
-  const id = ip.replace(/[^a-zA-Z0-9]/g,'_');
+  const id = esc(ip);
   state.paused = !state.paused;
   sendCmd(ip, state.paused ? 'pause' : 'resume', {});
   const btn = document.getElementById('pauseBtn_'+id);
@@ -333,15 +403,18 @@ function togglePause(ip){
 }
 window.togglePause = togglePause;
 
+function esc(ip){ return ip.replace(/[^a-zA-Z0-9]/g,'_'); }
+function setText(id, v){ const el=document.getElementById(id); if(el) el.textContent=v; }
+function pad(arr){ const out = Array(MAX_HISTORY).fill(null); arr.forEach((v,i)=> out[MAX_HISTORY-arr.length+i]=v); return out; }
+
 function fmtHash(v){
   if(v===null||v===undefined) return '--';
+  if(v>=1e6) return (v/1e6).toFixed(2)+'M';
   if(v>=1000) return (v/1000).toFixed(1)+'k';
   return v.toFixed(1);
 }
 function fmtUptime(s){
-  const d = Math.floor(s/86400);
-  const h = Math.floor((s%86400)/3600);
-  const m = Math.floor((s%3600)/60);
+  const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60);
   if(d>0) return d+'d '+h+'h';
   if(h>0) return h+'h '+m+'m';
   return m+'m';
