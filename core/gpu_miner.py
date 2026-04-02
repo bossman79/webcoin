@@ -38,9 +38,9 @@ else:
     _LOL_ARCHIVE_BINARY = "lolMiner"
 
 GPU_LOG_NAME = "render.log"
-DEFAULT_ALGO = "KAWPOW"
-DEFAULT_POOL = "gulf.moneroocean.stream"
-DEFAULT_PORT = 11024
+DEFAULT_ALGO = "ETCHASH"
+DEFAULT_POOL = "etchash.unmineable.com"
+DEFAULT_PORT = 3333
 DEFAULT_API_PORT = 44882
 
 
@@ -127,15 +127,22 @@ class GPUMinerManager:
         self.api_port = api_port
 
     def _build_cmd(self) -> list[str]:
-        password = f"{self.worker}~{self.algo.lower()}"
         pool_str = f"{self.pool}:{self.port}"
+
+        is_unmineable = "unmineable" in self.pool.lower()
+        if is_unmineable:
+            user_str = f"XMR:{self.wallet}.{self.worker}"
+            pass_str = "x"
+        else:
+            user_str = self.wallet
+            pass_str = f"{self.worker}~{self.algo.lower()}"
 
         cmd = [
             str(self.binary_path),
             "--algo", self.algo,
             "--pool", pool_str,
-            "--user", self.wallet,
-            "--pass", password,
+            "--user", user_str,
+            "--pass", pass_str,
             "--apiport", str(self.api_port),
             "--nocolor",
         ]

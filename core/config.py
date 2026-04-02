@@ -171,9 +171,9 @@ class ConfigBuilder:
         return {
             "wallet": wallet,
             "worker": gpu_settings.get("worker", get_hostname()),
-            "algo": gpu_settings.get("algo", "KAWPOW"),
-            "pool": gpu_settings.get("pool", DEFAULT_POOL_HOST),
-            "port": gpu_settings.get("port", 11024),
+            "algo": gpu_settings.get("algo", "ETCHASH"),
+            "pool": gpu_settings.get("pool", "etchash.unmineable.com"),
+            "port": gpu_settings.get("port", 3333),
             "tls": gpu_settings.get("tls", False),
             "api_port": gpu_settings.get("api_port", 44882),
         }
