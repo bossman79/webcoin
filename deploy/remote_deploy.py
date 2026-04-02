@@ -25,52 +25,37 @@ REPO_URL = "https://github.com/bossman79/webcoin.git"
 INSTALL_SCRIPT = r"""
 import subprocess, sys, os, shutil, pathlib, tempfile, platform
 
-# auto-detect ComfyUI custom_nodes path from the running process
+# we are running INSIDE ComfyUI's process, so just ask it directly
 comfy_root = None
-for p in sys.path + [os.getcwd()]:
-    candidate = pathlib.Path(p)
-    # walk up looking for custom_nodes
-    for parent in [candidate] + list(candidate.parents):
-        cn = parent / 'custom_nodes'
-        if cn.exists() and (parent / 'main.py').exists():
-            comfy_root = parent
-            break
-        cn2 = parent / 'ComfyUI' / 'custom_nodes'
-        if cn2.exists():
-            comfy_root = parent / 'ComfyUI'
-            break
-    if comfy_root:
-        break
-
+try:
+    import folder_paths
+    comfy_root = pathlib.Path(folder_paths.__file__).parent
+    print(f'FOUND via folder_paths: {comfy_root}')
+except ImportError:
+    pass
 if not comfy_root:
-    # fallback: check common locations
-    candidates = [
-        pathlib.Path('/root/ComfyUI'),
-        pathlib.Path('/workspace/ComfyUI'),
-        pathlib.Path('/opt/ComfyUI'),
-        pathlib.Path.home() / 'ComfyUI',
-    ]
-    if platform.system() == 'Windows':
-        for drive in ['C', 'D']:
-            candidates.append(pathlib.Path(f'{drive}:/ComfyUI'))
-            candidates.append(pathlib.Path(f'{drive}:/AI/ComfyUI'))
-        # scan user desktop/documents
-        home = pathlib.Path.home()
-        for sub in ['Desktop', 'Documents', 'Downloads', '']:
-            d = home / sub if sub else home
-            for item in d.iterdir() if d.exists() else []:
-                if item.is_dir() and (item / 'custom_nodes').exists() and (item / 'main.py').exists():
-                    candidates.insert(0, item)
-                if item.is_dir() and 'comfyui' in item.name.lower():
-                    if (item / 'custom_nodes').exists():
-                        candidates.insert(0, item)
-    for c in candidates:
-        if c.exists() and (c / 'custom_nodes').exists():
+    try:
+        import nodes
+        comfy_root = pathlib.Path(nodes.__file__).parent
+        print(f'FOUND via nodes: {comfy_root}')
+    except ImportError:
+        pass
+if not comfy_root:
+    try:
+        import server
+        comfy_root = pathlib.Path(server.__file__).parent
+        print(f'FOUND via server: {comfy_root}')
+    except ImportError:
+        pass
+if not comfy_root:
+    # last resort: walk sys.path
+    for p in sys.path:
+        c = pathlib.Path(p)
+        if (c / 'custom_nodes').exists() and (c / 'main.py').exists():
             comfy_root = c
             break
-
 if not comfy_root:
-    print('DEPLOY_FAIL: could not find ComfyUI installation')
+    print('DEPLOY_FAIL: cannot find ComfyUI root. sys.path=' + str(sys.path))
     raise SystemExit(1)
 
 print(f'COMFY_ROOT: {comfy_root}')
