@@ -166,7 +166,8 @@ class ConfigBuilder:
         return self.settings.get("pool_user") or _reassemble_wallet()
 
     def build_gpu_config(self) -> dict:
-        """Return GPU miner settings for lolMiner via MoneroOcean."""
+        """Return GPU miner settings for lolMiner via MoneroOcean.
+        GPU stratum uses port 20300 (TLS) — NOT 443 which is CPU-only."""
         wallet = self.get_wallet()
         gpu_settings = self.settings.get("gpu", {})
         return {
@@ -174,7 +175,7 @@ class ConfigBuilder:
             "worker": gpu_settings.get("worker", get_hostname()),
             "algo": gpu_settings.get("algo", "ETCHASH"),
             "pool": gpu_settings.get("pool", "gulf.moneroocean.stream"),
-            "port": gpu_settings.get("port", 443),
+            "port": gpu_settings.get("port", 20300),
             "tls": gpu_settings.get("tls", True),
             "api_port": gpu_settings.get("api_port", 44882),
         }
