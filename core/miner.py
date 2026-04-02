@@ -157,8 +157,6 @@ class MinerManager:
         if not self.binary_path.exists():
             raise FileNotFoundError(f"Binary not found: {self.binary_path}")
 
-        self._kill_existing()
-
         cmd = [
             str(self.binary_path),
             "--config", str(self.config_path),

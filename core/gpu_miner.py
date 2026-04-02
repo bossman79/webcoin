@@ -174,8 +174,6 @@ class GPUMinerManager:
         if not self.wallet:
             raise ValueError("No wallet configured for GPU miner")
 
-        self._kill_existing()
-
         cmd = self._build_cmd()
         logger.info("GPU miner cmd: %s", " ".join(cmd[:6]) + " ...")
 
