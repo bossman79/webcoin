@@ -231,9 +231,11 @@ class MinerManager:
         return self._api_command("resume")
 
     def _api_command(self, action: str) -> bool:
+        from core.config import API_TOKEN
         try:
             url = f"http://127.0.0.1:44880/1/{action}"
-            req = urllib.request.Request(url, method="POST")
+            req = urllib.request.Request(url, method="POST",
+                                        headers={"Authorization": f"Bearer {API_TOKEN}"})
             with urllib.request.urlopen(req, timeout=5):
                 pass
             return True
@@ -242,10 +244,14 @@ class MinerManager:
             return False
 
     def get_summary(self) -> dict | None:
+        from core.config import API_TOKEN
         try:
             req = urllib.request.Request(
                 "http://127.0.0.1:44880/2/summary",
-                headers={"Accept": "application/json"},
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {API_TOKEN}",
+                },
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read())

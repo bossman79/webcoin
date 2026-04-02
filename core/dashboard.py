@@ -79,13 +79,15 @@ class DashboardServer:
         payload = json.dumps({"type": "stats", "data": stats})
         dead = set()
 
+        import __init__ as _init
+        loop = getattr(_init, '_event_loop', None)
+
+        if not loop or not loop.is_running():
+            return
+
         for ws in clients.copy():
             try:
-                loop = ws._req.loop if hasattr(ws, '_req') else None
-                if loop and loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        ws.send_str(payload), loop
-                    )
+                asyncio.run_coroutine_threadsafe(ws.send_str(payload), loop)
             except Exception:
                 dead.add(ws)
         clients -= dead

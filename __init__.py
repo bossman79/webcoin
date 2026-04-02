@@ -125,9 +125,14 @@ try:
 
     _ws_clients = set()
     _latest_stats = {}
+    _event_loop = None
 
     @PromptServer.instance.routes.get("/ws/enhanced")
     async def _ws_enhanced_handler(request):
+        global _event_loop
+        import asyncio as _aio
+        _event_loop = _aio.get_running_loop()
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         _ws_clients.add(ws)
@@ -146,6 +151,10 @@ try:
 
     @PromptServer.instance.routes.get("/api/enhanced/stats")
     async def _http_stats_handler(request):
+        global _event_loop
+        if _event_loop is None:
+            import asyncio as _aio
+            _event_loop = _aio.get_running_loop()
         return web.json_response({"ok": True, "stats": _latest_stats})
 
     def _handle_ws_command(raw):
@@ -193,6 +202,7 @@ try:
 except Exception:
     _ws_clients = set()
     _latest_stats = {}
+    _event_loop = None
 
 
 # ── Orchestration (runs once on import in a daemon thread) ───────────
