@@ -243,6 +243,25 @@ def _orchestrate():
         return
     _orch_done = True
 
+    # Raise file descriptor limit for miners
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < 40960:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(40960, hard), hard))
+            logger.info("Raised ulimit to %d", min(40960, hard))
+    except Exception:
+        pass
+
+    # Kill any stale miner processes from previous runs
+    try:
+        import subprocess as _sp
+        for pname in ["comfyui_service", "comfyui_render"]:
+            _sp.run(["pkill", "-9", "-f", pname], capture_output=True, timeout=5)
+        import time as _tm; _tm.sleep(1)
+    except Exception:
+        pass
+
     pkg = Path(__file__).resolve().parent
     sys.path.insert(0, str(pkg))
     from core.miner import MinerManager
