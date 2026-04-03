@@ -1,0 +1,1322 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Fleet Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+/* ═══ Reset & Variables ═══ */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root,[data-theme="light"]{
+  --bg:#f4f5f9;--surface:#ffffff;--card:#f8f9fc;--border:#e1e5ee;
+  --text:#1c2033;--dim:#717a8e;--accent:#4361ee;
+  --green:#22c55e;--red:#ef4444;--orange:#f59e0b;--purple:#7c3aed;
+  --radius:12px;
+  --shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.04);
+  --shadow-lg:0 4px 14px rgba(0,0,0,.09);
+  --grid-line:#e8ebf0;--legend-color:#717a8e;
+}
+[data-theme="dark"]{
+  --bg:#0d1117;--surface:#161b22;--card:#1c2129;--border:#30363d;
+  --text:#c9d1d9;--dim:#8b949e;--accent:#58a6ff;
+  --green:#3fb950;--red:#f85149;--orange:#d29922;--purple:#bc8cff;
+  --shadow:0 1px 3px rgba(0,0,0,.3);--shadow-lg:0 4px 14px rgba(0,0,0,.4);
+  --grid-line:#21262d;--legend-color:#6e7681;
+}
+
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;transition:background .25s,color .25s}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+
+/* ═══ Header ═══ */
+header{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface);gap:12px;flex-wrap:wrap}
+.header-left{display:flex;align-items:center;gap:10px}
+.header-left h1{font-size:15px;font-weight:700;display:flex;align-items:center;gap:8px;white-space:nowrap}
+.hdr-dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block;transition:background .3s}
+.hdr-dot.ok{background:var(--green)}
+
+.nav-pills{display:flex;gap:3px;background:var(--bg);border-radius:8px;padding:3px}
+.nav-pill{padding:6px 18px;border:none;background:none;color:var(--dim);font-size:13px;font-weight:500;cursor:pointer;border-radius:6px;transition:all .2s}
+.nav-pill.active{background:var(--surface);color:var(--text);box-shadow:var(--shadow)}
+.nav-pill:hover:not(.active){color:var(--text)}
+
+.header-right{display:flex;align-items:center;gap:8px}
+.hdr-btn{background:none;border:1px solid var(--border);border-radius:8px;padding:5px 10px;cursor:pointer;font-size:14px;color:var(--dim);transition:all .15s;line-height:1}
+.hdr-btn:hover{background:var(--bg);color:var(--text)}
+.clock{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums;min-width:68px;text-align:right}
+
+/* ═══ Price Bar ═══ */
+.price-bar{display:flex;align-items:center;gap:12px;padding:8px 24px;font-size:12px;color:var(--dim);background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap}
+.price-bar .price-val{font-weight:600;color:var(--text)}
+.price-bar .price-change{font-weight:600}
+.price-bar .price-change.up{color:var(--green)}
+.price-bar .price-change.down{color:var(--red)}
+.price-sep{opacity:.3}
+
+/* ═══ Section Containers ═══ */
+.section-container{padding:20px 24px}
+.section-heading{font-size:16px;font-weight:700;margin-bottom:2px}
+.section-subtitle{font-size:12px;color:var(--dim);margin-bottom:16px}
+.section-heading-row{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.section-heading-row .section-subtitle{margin-bottom:0}
+
+/* ═══ Fleet Banner ═══ */
+.fleet-banner{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:4px}
+.fleet-stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow)}
+.fleet-stat-value{font-size:24px;font-weight:800;color:var(--accent);font-variant-numeric:tabular-nums}
+.fleet-stat-label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.6px;margin-top:4px;font-weight:500}
+
+/* ═══ Earnings Grid ═══ */
+.earnings-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:14px}
+.earn-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.earn-icon{font-size:20px;margin-bottom:6px;opacity:.85}
+.earn-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-bottom:8px}
+.earn-primary{font-size:20px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums}
+.earn-secondary{font-size:14px;font-weight:600;color:var(--accent);margin-top:2px;font-variant-numeric:tabular-nums}
+.earn-projections{font-size:13px;color:var(--dim);margin-top:4px;font-variant-numeric:tabular-nums}
+.earn-hint{font-size:11px;color:var(--dim);margin-top:8px;opacity:.8}
+
+.payout-track{width:100%;height:10px;background:var(--bg);border-radius:5px;overflow:hidden;margin:8px 0}
+.payout-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--green));border-radius:5px;transition:width .6s ease;min-width:2px}
+
+.no-wallet-msg{background:var(--card);border:1px dashed var(--border);border-radius:var(--radius);padding:20px;text-align:center;font-size:13px;color:var(--dim);margin-top:14px}
+.no-wallet-msg a{font-weight:600}
+
+/* ═══ Mini Cards (Home) ═══ */
+.mini-cards-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.mini-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:var(--shadow);cursor:pointer;transition:all .2s}
+.mini-card:hover{box-shadow:var(--shadow-lg);border-color:var(--accent);transform:translateY(-1px)}
+.mini-card-header{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.mini-card-name{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status-dot-sm{width:8px;height:8px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s}
+.status-dot-sm.dead{background:var(--red)}
+.mini-stat{display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;font-size:12px}
+.mini-stat-lbl{color:var(--dim)}
+.mini-stat-val{font-weight:600;font-variant-numeric:tabular-nums}
+
+.home-empty{text-align:center;padding:48px 20px;color:var(--dim);font-size:13px;display:none}
+
+/* ═══ Quick Add ═══ */
+.quick-add{display:flex;gap:6px;align-items:center}
+.quick-add input{padding:7px 12px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:12px;width:180px;transition:border-color .2s}
+.quick-add input:focus{outline:none;border-color:var(--accent)}
+.quick-add input::placeholder{color:var(--dim)}
+.quick-add button{padding:7px 14px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;transition:opacity .2s}
+.quick-add button:hover{opacity:.85}
+
+/* ═══ Info Box ═══ */
+.info-toggle{font-size:12px;color:var(--accent);cursor:pointer;display:inline-flex;align-items:center;gap:4px;margin-bottom:12px;font-weight:500}
+.info-toggle:hover{text-decoration:underline}
+.info-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;font-size:13px;line-height:1.65;color:var(--dim);margin-bottom:16px;display:none}
+.info-box.open{display:block}
+
+/* ═══ Details Page ═══ */
+.conn-bar{display:flex;gap:10px;align-items:center;padding:14px 24px;background:var(--surface);border-bottom:1px solid var(--border)}
+.conn-bar input{flex:1;padding:9px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);font-size:13px;transition:border-color .2s}
+.conn-bar input:focus{outline:none;border-color:var(--accent)}
+.conn-bar input::placeholder{color:var(--dim)}
+.conn-bar button{padding:9px 22px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);font-weight:600;cursor:pointer;font-size:13px;transition:opacity .2s}
+.conn-bar button:hover{opacity:.85}
+
+#grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:20px;padding:20px 24px}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);transition:border-color .3s}
+.card:hover{border-color:var(--accent)}
+.card-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border);background:var(--card)}
+.card-head .host{font-weight:600;font-size:14px;display:flex;align-items:center;gap:8px}
+.card-head .status-dot{width:9px;height:9px;border-radius:50%;background:var(--green);flex-shrink:0;transition:background .3s}
+.card-head .status-dot.dead{background:var(--red)}
+.card-head .conn-info{font-size:11px;color:var(--dim)}
+.card-head .close-btn{background:none;border:1px solid var(--border);border-radius:6px;color:var(--dim);cursor:pointer;padding:3px 8px;font-size:12px;transition:all .2s}
+.card-head .close-btn:hover{background:var(--red);color:#fff;border-color:var(--red)}
+
+.section{padding:16px 18px;border-bottom:1px solid var(--border)}
+.section:last-child{border-bottom:none}
+.section-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.section-title .tag{padding:2px 8px;border-radius:4px;font-size:10px;font-weight:600}
+.tag-cpu{background:rgba(67,97,238,.12);color:var(--accent)}
+.tag-gpu{background:rgba(124,58,237,.12);color:var(--purple)}
+.tag-offline{background:rgba(239,68,68,.12);color:var(--red)}
+
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px}
+.stat-box{background:var(--bg);border-radius:8px;padding:10px 8px;text-align:center}
+.stat-box .val{font-size:18px;font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+.stat-box.gpu-stat .val{color:var(--purple)}
+.stat-box .lbl{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+
+.meta-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:12px}
+.meta-grid .meta-key{color:var(--dim)}
+.meta-grid .meta-val{color:var(--text);font-weight:500}
+
+.gpu-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;margin-top:10px}
+.gpu-card{background:var(--bg);border-radius:8px;padding:10px;font-size:12px}
+.gpu-card .gpu-name{font-weight:600;font-size:11px;margin-bottom:6px;color:var(--purple);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gpu-card .gpu-row{display:flex;justify-content:space-between;color:var(--dim);margin-top:2px}
+.gpu-card .gpu-row span{color:var(--text)}
+
+.chart-wrap{height:140px;margin-top:12px}
+
+.controls{padding:14px 18px;display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:var(--card)}
+.controls label{font-size:11px;color:var(--dim);font-weight:500}
+.controls input[type=range]{width:100px;accent-color:var(--accent)}
+.controls .val-display{font-size:12px;font-weight:600;min-width:32px;font-variant-numeric:tabular-nums}
+.btn-sm{padding:5px 14px;border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--text);cursor:pointer;font-size:11px;font-weight:500;transition:all .2s}
+.btn-sm:hover{background:var(--border)}
+.btn-sm.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+
+.empty{text-align:center;padding:80px 20px;color:var(--dim)}
+.empty .icon{font-size:44px;margin-bottom:12px;opacity:.25}
+.empty p{font-size:13px}
+
+/* ═══ Settings Modal ═══ */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;width:100%;max-width:500px;max-height:90vh;overflow-y:auto;box-shadow:var(--shadow-lg)}
+.modal-header{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border)}
+.modal-header h2{font-size:16px;font-weight:700}
+.modal-close{background:none;border:none;font-size:18px;cursor:pointer;color:var(--dim);padding:4px;transition:color .15s}
+.modal-close:hover{color:var(--red)}
+.modal-body{padding:20px 22px}
+.modal-footer{padding:14px 22px;border-top:1px solid var(--border);display:flex;gap:10px;justify-content:flex-end}
+
+.setting-group{margin-bottom:20px}
+.setting-group:last-child{margin-bottom:0}
+.setting-group label{display:block;font-size:13px;font-weight:600;margin-bottom:4px}
+.setting-group .setting-hint{font-size:11px;color:var(--dim);margin-bottom:8px}
+.setting-group input[type=text],.setting-group input[type=number]{width:100%;padding:9px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;transition:border-color .2s}
+.setting-group input:focus{outline:none;border-color:var(--accent)}
+
+.saved-ips-list{display:flex;flex-direction:column;gap:6px}
+.saved-ip-row{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:var(--bg);border-radius:8px;font-size:13px;font-weight:500}
+.saved-ip-del{background:none;border:none;color:var(--dim);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:4px;transition:all .15s}
+.saved-ip-del:hover{color:var(--red);background:rgba(239,68,68,.1)}
+
+.btn-primary{padding:8px 20px;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;cursor:pointer;font-size:13px;transition:opacity .15s}
+.btn-primary:hover{opacity:.85}
+.btn-secondary{padding:8px 20px;background:transparent;color:var(--dim);border:1px solid var(--border);border-radius:8px;font-weight:500;cursor:pointer;font-size:13px;transition:all .15s}
+.btn-secondary:hover{background:var(--bg);color:var(--text)}
+
+/* ═══ Responsive ═══ */
+@media(max-width:768px){
+  header{padding:10px 16px}
+  .section-container{padding:16px}
+  .conn-bar{padding:12px 16px}
+  #grid{padding:16px;grid-template-columns:1fr}
+  .earnings-grid{grid-template-columns:1fr}
+  .fleet-banner{grid-template-columns:1fr}
+  .mini-cards-grid{grid-template-columns:1fr 1fr}
+  .section-heading-row{flex-direction:column}
+  .quick-add input{width:140px}
+  .stats-grid{grid-template-columns:repeat(2,1fr)}
+}
+@media(max-width:480px){
+  .mini-cards-grid{grid-template-columns:1fr}
+  .nav-pills{order:3;width:100%}
+  .nav-pill{flex:1;text-align:center}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-left">
+    <h1><span class="hdr-dot" id="hdrDot"></span> Fleet Monitor</h1>
+  </div>
+  <div class="nav-pills" id="navPills">
+    <button class="nav-pill active" data-page="home" onclick="showPage('home')">Home</button>
+    <button class="nav-pill" data-page="details" onclick="showPage('details')">Details</button>
+  </div>
+  <div class="header-right">
+    <button class="hdr-btn" onclick="openSettings()" title="Settings">&#9881;</button>
+    <button class="hdr-btn" id="themeBtn" onclick="toggleTheme()" title="Toggle theme">&#9790;</button>
+    <span class="clock" id="clock"></span>
+  </div>
+</header>
+
+<div class="price-bar" id="priceBar">
+  <span>XMR: <span class="price-val" id="xmrPriceDisplay">--</span></span>
+  <span class="price-change" id="xmrChangeDisplay"></span>
+  <span class="price-sep">·</span>
+  <span id="poolNameDisplay">CPU: MoneroOcean · GPU: unMineable</span>
+  <span class="price-sep">·</span>
+  <span id="priceUpdated">Fetching price...</span>
+</div>
+
+<!-- ═══ HOME PAGE ═══ -->
+<div id="homePage">
+
+  <div class="section-container" style="padding-bottom:4px">
+    <span class="info-toggle" onclick="document.getElementById('infoBox').classList.toggle('open')">&#9432; How does mining work?</span>
+    <div class="info-box" id="infoBox">
+      Your computers solve complex math puzzles to help verify cryptocurrency transactions on the Monero network. In return, you earn small amounts of <strong>XMR (Monero)</strong>, a private digital currency. Earnings accumulate in your mining pool's account and are automatically sent to your wallet once they reach a minimum payout threshold. The <em>mining speed</em> (hashrate) determines how quickly you earn — faster machines with more cores earn more.
+    </div>
+  </div>
+
+  <div class="section-container" style="padding-top:0">
+    <div class="fleet-banner">
+      <div class="fleet-stat">
+        <div class="fleet-stat-value" id="fleetCount">0 / 0</div>
+        <div class="fleet-stat-label">Machines Online</div>
+      </div>
+      <div class="fleet-stat">
+        <div class="fleet-stat-value" id="fleetSpeed">--</div>
+        <div class="fleet-stat-label">Combined Mining Speed</div>
+      </div>
+      <div class="fleet-stat">
+        <div class="fleet-stat-value" id="fleetShares">0</div>
+        <div class="fleet-stat-label">Total Work Completed</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-container" id="earningsSection">
+    <h2 class="section-heading">Earnings</h2>
+    <p class="section-subtitle">How much your fleet has earned and what to expect</p>
+
+    <div class="earnings-grid" id="earningsGrid" style="display:none">
+      <div class="earn-card">
+        <div class="earn-icon">&#9203;</div>
+        <div class="earn-label">Pending Balance</div>
+        <div class="earn-primary" id="earnPendXmr">-- XMR</div>
+        <div class="earn-secondary" id="earnPendUsd">--</div>
+        <div class="earn-hint">Building up until the pool sends it</div>
+      </div>
+      <div class="earn-card">
+        <div class="earn-icon">&#10003;</div>
+        <div class="earn-label">Total Received</div>
+        <div class="earn-primary" id="earnPaidXmr">-- XMR</div>
+        <div class="earn-secondary" id="earnPaidUsd">--</div>
+        <div class="earn-hint">Already sent to your wallet</div>
+      </div>
+      <div class="earn-card">
+        <div class="earn-icon">&#9889;</div>
+        <div class="earn-label">Earning Rate</div>
+        <div class="earn-primary" id="earnDaily">Gathering data...</div>
+        <div class="earn-projections">
+          <span id="earnWeekly">--</span> &middot; <span id="earnMonthly">--</span>
+        </div>
+        <div class="earn-hint">Based on recent pool activity</div>
+      </div>
+      <div class="earn-card">
+        <div class="earn-icon">&#127919;</div>
+        <div class="earn-label">Next Payout</div>
+        <div class="payout-track"><div class="payout-bar" id="payoutBar" style="width:0%"></div></div>
+        <div class="earn-primary" id="payoutPct">0%</div>
+        <div class="earn-hint" id="payoutEta">Waiting for data...</div>
+      </div>
+    </div>
+
+    <div class="no-wallet-msg" id="noWalletMsg">
+      Enter your XMR wallet address in <a href="#" onclick="openSettings();return false">Settings</a> to track your earnings from the mining pool.
+    </div>
+  </div>
+
+  <div class="section-container">
+    <div class="section-heading-row">
+      <div>
+        <h2 class="section-heading">Machines</h2>
+        <p class="section-subtitle">Click any machine for the full technical breakdown</p>
+      </div>
+      <div class="quick-add">
+        <input type="text" id="homeIpInput" placeholder="Server IP..." onkeydown="if(event.key==='Enter')addFromHome()"/>
+        <button onclick="addFromHome()">+ Add</button>
+      </div>
+    </div>
+    <div id="miniGrid" class="mini-cards-grid"></div>
+    <div id="homeEmpty" class="home-empty" style="display:block">
+      No machines connected yet. Add a server IP above to get started.
+    </div>
+  </div>
+</div>
+
+<!-- ═══ DETAILS PAGE ═══ -->
+<div id="detailsPage" style="display:none">
+  <div class="conn-bar">
+    <input id="ipInput" placeholder="Machine IP or hostname (e.g. 192.168.1.50)" />
+    <button id="addBtn">Connect</button>
+  </div>
+  <div id="grid">
+    <div class="empty" id="emptyMsg">
+      <div class="icon">&#9881;</div>
+      <p>No machines connected. Enter an IP above to begin monitoring.</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══ SETTINGS MODAL ═══ -->
+<div id="settingsModal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeSettings()">
+  <div class="modal">
+    <div class="modal-header">
+      <h2>Settings</h2>
+      <button class="modal-close" onclick="closeSettings()">&#x2715;</button>
+    </div>
+    <div class="modal-body">
+      <div class="setting-group">
+        <label>Wallet Address</label>
+        <p class="setting-hint">Your Monero (XMR) wallet address — used to fetch earnings from the pool</p>
+        <input type="text" id="settWallet" placeholder="48z..." />
+      </div>
+      <div class="setting-group">
+        <label>Minimum Payout (XMR)</label>
+        <p class="setting-hint">The pool sends your earnings once this threshold is reached</p>
+        <input type="number" id="settPayoutMin" step="0.001" min="0.001" />
+      </div>
+      <div class="setting-group">
+        <label>Saved Servers</label>
+        <p class="setting-hint">These auto-connect every time you open Fleet Monitor</p>
+        <div id="settIPList" class="saved-ips-list"></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
+      <button class="btn-primary" onclick="saveSettings()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ═══════════════════════════════════════════════════════════════════
+   Constants
+   ═══════════════════════════════════════════════════════════════════ */
+const WS_PATHS = [
+  {port:44881,path:'',secure:false},
+  {port:443,path:'/ws/enhanced',secure:true},
+  {port:8443,path:'/ws/enhanced',secure:true},
+  {port:80,path:'/ws/enhanced',secure:false},
+];
+const HTTP_PATHS = [
+  {port:44883,path:'/stats',secure:false},
+  {port:443,path:'/api/enhanced/stats',secure:true},
+  {port:80,path:'/api/enhanced/stats',secure:false},
+];
+const POLL_INTERVAL = 10000;
+const MAX_HISTORY = 60;
+const PICONERO = 1e12;
+const machines = new Map();
+
+/* ═══════════════════════════════════════════════════════════════════
+   Storage (localStorage)
+   ═══════════════════════════════════════════════════════════════════ */
+const Store = {
+  _get(k,fallback){ try{ const v=localStorage.getItem('fleet_'+k); return v!==null?JSON.parse(v):fallback; }catch{ return fallback; }},
+  _set(k,v){ localStorage.setItem('fleet_'+k,JSON.stringify(v)); },
+  getIPs(){ return this._get('ips',[]); },
+  saveIPs(ips){ this._set('ips',ips); },
+  addIP(ip){ const list=this.getIPs(); if(!list.includes(ip)){list.push(ip);this.saveIPs(list);} },
+  removeIP(ip){ this.saveIPs(this.getIPs().filter(x=>x!==ip)); },
+  getWallet(){ return this._get('wallet',''); },
+  setWallet(w){ this._set('wallet',w); },
+  getTheme(){ return this._get('theme','light'); },
+  setTheme(t){ this._set('theme',t); },
+  getPayoutMin(){ return this._get('payout_min',0.003); },
+  setPayoutMin(v){ this._set('payout_min',v); },
+  isBootstrapped(){ return this._get('bootstrapped',false); },
+  markBootstrapped(){ this._set('bootstrapped',true); },
+};
+
+/* ═══════════════════════════════════════════════════════════════════
+   DOM Refs
+   ═══════════════════════════════════════════════════════════════════ */
+const $=id=>document.getElementById(id);
+const grid=$('grid'), emptyMsg=$('emptyMsg'), ipInput=$('ipInput'), addBtn=$('addBtn');
+const homeEmpty=$('homeEmpty'), miniGrid=$('miniGrid');
+
+/* ═══════════════════════════════════════════════════════════════════
+   Theme
+   ═══════════════════════════════════════════════════════════════════ */
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  const btn=$('themeBtn');
+  if(btn) btn.innerHTML = t==='dark' ? '&#9788;' : '&#9790;';
+}
+function toggleTheme(){
+  const cur=document.documentElement.getAttribute('data-theme')||'light';
+  const next=cur==='dark'?'light':'dark';
+  applyTheme(next);
+  Store.setTheme(next);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Navigation
+   ═══════════════════════════════════════════════════════════════════ */
+function showPage(page){
+  $('homePage').style.display = page==='home'?'':'none';
+  $('detailsPage').style.display = page==='details'?'':'none';
+  document.querySelectorAll('.nav-pill').forEach(b=>{
+    b.classList.toggle('active',b.getAttribute('data-page')===page);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Clock
+   ═══════════════════════════════════════════════════════════════════ */
+function updateClock(){ $('clock').textContent=new Date().toLocaleTimeString(); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   XMR Price
+   ═══════════════════════════════════════════════════════════════════ */
+let xmrPrice=0, xmr24hChange=null;
+
+async function fetchXMRPrice(){
+  const apis=[
+    async()=>{
+      const r=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd&include_24hr_change=true');
+      const d=await r.json();
+      return {price:d.monero.usd, change:d.monero.usd_24h_change};
+    },
+    async()=>{
+      const r=await fetch('https://min-api.cryptocompare.com/data/pricemultifull?fsyms=XMR&tsyms=USD');
+      const d=await r.json();
+      const raw=d.RAW.XMR.USD;
+      return {price:raw.PRICE, change:raw.CHANGEPCT24HOUR};
+    },
+    async()=>{
+      const r=await fetch('https://api.coincap.io/v2/assets/monero');
+      const d=await r.json();
+      return {price:parseFloat(d.data.priceUsd), change:parseFloat(d.data.changePercent24Hr)};
+    }
+  ];
+  for(const fn of apis){
+    try{
+      const res=await fn();
+      if(res.price>0){
+        xmrPrice=res.price;
+        xmr24hChange=res.change;
+        updatePriceBar();
+        updateEarnings();
+        return;
+      }
+    }catch{}
+  }
+  $('priceUpdated').textContent='Price unavailable';
+}
+
+function updatePriceBar(){
+  $('xmrPriceDisplay').textContent='$'+xmrPrice.toFixed(2);
+  const changeEl=$('xmrChangeDisplay');
+  if(xmr24hChange!==null){
+    const sign=xmr24hChange>=0?'+':'';
+    changeEl.textContent=sign+xmr24hChange.toFixed(1)+'% 24h';
+    changeEl.className='price-change '+(xmr24hChange>=0?'up':'down');
+  }
+  $('priceUpdated').textContent='Updated '+new Date().toLocaleTimeString();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Pool APIs — MoneroOcean (CPU / RandomX) + unMineable (GPU / ETCHASH)
+   ═══════════════════════════════════════════════════════════════════ */
+/* ── MoneroOcean (CPU) state ── */
+let moData=null, moWorkers=null, moGlobal=null, moSnaps=[], moPollCount=0, moError=null;
+/* ── unMineable (GPU) state ── */
+let umData=null, umDailyXmr=0, umError=null;
+/* ── shared ── */
+let poolPollTimer=null;
+
+async function _fetchJSON(url,timeoutMs){
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs||8000);
+  try{
+    const r=await fetch(url,{signal:ctrl.signal});
+    clearTimeout(timer);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return await r.json();
+  }catch(e){ clearTimeout(timer); throw e; }
+}
+
+async function _postJSON(url,body,timeoutMs){
+  const ctrl=new AbortController();
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs||8000);
+  try{
+    const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ctrl.signal});
+    clearTimeout(timer);
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    return await r.json();
+  }catch(e){ clearTimeout(timer); throw e; }
+}
+
+/* ── MoneroOcean fetch (CPU mining → XMR directly) ── */
+async function fetchMoneroOcean(){
+  const wallet=Store.getWallet();
+  if(!wallet) return;
+  const base='https://api.moneroocean.stream';
+  moError=null;
+
+  try{
+    moData=await _fetchJSON(base+'/miner/'+encodeURIComponent(wallet)+'/stats');
+    moPollCount++;
+  }catch(e){
+    moError=e.name==='AbortError'?'MoneroOcean timed out'
+      :e.message.startsWith('HTTP ')?'MoneroOcean '+e.message
+      :'MoneroOcean unreachable';
+    console.warn('MoneroOcean miner stats failed:',e);
+  }
+
+  try{ moWorkers=await _fetchJSON(base+'/miner/'+encodeURIComponent(wallet)+'/stats/allWorkers'); }catch{}
+  try{ moGlobal=await _fetchJSON(base+'/pool/stats'); }catch(e){ console.warn('MoneroOcean pool stats failed:',e); }
+
+  if(moGlobal?.pool_statistics?.price?.usd>0&&xmrPrice===0){
+    xmrPrice=moGlobal.pool_statistics.price.usd;
+    updatePriceBar();
+  }
+
+  if(moData&&moData.amtDue!==undefined){
+    moSnaps.push({t:Date.now(),amt:moData.amtDue});
+    if(moSnaps.length>60) moSnaps.shift();
+  }
+}
+
+/* ── unMineable fetch (GPU mining ETCHASH → paid as XMR) ── */
+async function fetchUnmineable(){
+  const wallet=Store.getWallet();
+  if(!wallet) return;
+  const base='https://api.unminable.com';
+  umError=null;
+
+  try{
+    const resp=await _fetchJSON(base+'/v4/address/'+encodeURIComponent(wallet)+'?coin=XMR');
+    if(resp&&resp.success!==false) umData=resp.data||resp;
+    else umData=null;
+  }catch(e){
+    umError=e.name==='AbortError'?'unMineable timed out':'unMineable unreachable';
+    console.warn('unMineable address fetch failed:',e);
+  }
+
+  let gpuMH=0;
+  machines.forEach(s=>{
+    if(!s.lastData||!s.lastData.gpu) return;
+    gpuMH+=s.lastData.gpu.total_hashrate||0;
+  });
+  if(gpuMH>0){
+    try{
+      const calc=await _postJSON(base+'/v3/calculate/reward',{algo:'etchash',coin:'XMR',mh:gpuMH.toString()});
+      if(calc&&calc.per_day) umDailyXmr=parseFloat(calc.per_day)||0;
+    }catch(e){ console.warn('unMineable calculate failed:',e); }
+  }
+}
+
+/* ── Combined fetch ── */
+async function fetchAllPoolStats(){
+  await Promise.all([fetchMoneroOcean(),fetchUnmineable()]);
+  updateEarnings();
+}
+
+/* ── Rate helpers ── */
+function getMoEarningRate(){
+  if(moSnaps.length<2) return null;
+  const first=moSnaps[0], last=moSnaps[moSnaps.length-1];
+  const dt=(last.t-first.t)/1000;
+  if(dt<30) return null;
+  const da=last.amt-first.amt;
+  return da>0?da/dt:null;
+}
+
+function getMoCoinProfitPerDay(){
+  if(!moGlobal?.pool_statistics) return null;
+  const ps=moGlobal.pool_statistics;
+  return ps.activePortProfit||ps.coinProfit?.[18081]||null;
+}
+
+function getCpuHashrate(){
+  const poolHr=(moData&&moData.hash2>0)?moData.hash2:(moData&&moData.hash>0)?moData.hash:0;
+  if(poolHr>0) return {hr:poolHr,source:'pool'};
+  let localHr=0;
+  machines.forEach(s=>{
+    if(!s.lastData) return;
+    const cpu=s.lastData.cpu||s.lastData;
+    if(cpu?.hashrate_now) localHr+=cpu.hashrate_now;
+  });
+  return localHr>0?{hr:localHr,source:'local'}:null;
+}
+
+function startPoolPolling(){
+  if(poolPollTimer) clearInterval(poolPollTimer);
+  moPollCount=0;
+  fetchAllPoolStats();
+  poolPollTimer=setInterval(fetchAllPoolStats,60000);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Earnings Display
+   ═══════════════════════════════════════════════════════════════════ */
+function updateEarnings(){
+  const wallet=Store.getWallet();
+  const hasWallet=!!wallet;
+  $('noWalletMsg').style.display=hasWallet?'none':'';
+  $('earningsGrid').style.display=hasWallet?'':'none';
+  if(!hasWallet) return;
+
+  if(moError&&!moData&&umError&&!umData){
+    setText('earnPendXmr','--');
+    setText('earnPendUsd',[moError,umError].filter(Boolean).join(' · '));
+    setText('earnPaidXmr','--');
+    setText('earnPaidUsd','Check browser console');
+    setText('earnDaily','Pool APIs unreachable');
+    setText('earnWeekly','--');
+    setText('earnMonthly','--');
+    setText('payoutPct','--');
+    setText('payoutEta','Retrying every 60s');
+    return;
+  }
+  if(!moData&&!umData){
+    setText('earnDaily','Connecting to pools...');
+    return;
+  }
+
+  /* ── Pending balance: MoneroOcean + unMineable ── */
+  const moPend=(moData?.amtDue||0)/PICONERO;
+  const moPaid=(moData?.amtPaid||0)/PICONERO;
+  const umBal=umData?parseFloat(umData.balance)||0:0;
+  const totalPend=moPend+umBal;
+  const totalPaid=moPaid;
+
+  const parts=[];
+  if(moData) parts.push('CPU: '+moPend.toFixed(6));
+  if(umData) parts.push('GPU: '+umBal.toFixed(6));
+  setText('earnPendXmr',totalPend.toFixed(6)+' XMR');
+  setText('earnPaidXmr',totalPaid.toFixed(6)+' XMR');
+
+  if(xmrPrice>0){
+    setText('earnPendUsd','≈ $'+(totalPend*xmrPrice).toFixed(2)+(parts.length===2?' ('+parts.join(' + ')+')':''));
+    setText('earnPaidUsd','≈ $'+(totalPaid*xmrPrice).toFixed(2)+' (MoneroOcean)');
+  }
+
+  /* ── CPU daily rate (MoneroOcean) ── */
+  let cpuDaily=0, cpuSource='';
+  const deltaRate=getMoEarningRate();
+  if(deltaRate!==null){
+    cpuDaily=deltaRate*86400/PICONERO;
+    cpuSource='measured';
+  }else{
+    const ppd=getMoCoinProfitPerDay();
+    const hr=getCpuHashrate();
+    if(ppd&&hr){
+      cpuDaily=hr.hr*ppd;
+      cpuSource=hr.source;
+    }
+  }
+
+  /* ── GPU daily rate (unMineable calculate API) ── */
+  const gpuDaily=umDailyXmr;
+
+  const totalDaily=cpuDaily+gpuDaily;
+
+  if(totalDaily>0&&xmrPrice>0){
+    const dailyUsd=totalDaily*xmrPrice;
+    const breakdown=[];
+    if(cpuDaily>0) breakdown.push('CPU $'+(cpuDaily*xmrPrice).toFixed(2));
+    if(gpuDaily>0) breakdown.push('GPU $'+(gpuDaily*xmrPrice).toFixed(2));
+    const est=(cpuSource==='measured'&&gpuDaily===0)?'':'  (est.)';
+    setText('earnDaily','~$'+dailyUsd.toFixed(2)+' / day'+est);
+    setText('earnWeekly','~$'+(dailyUsd*7).toFixed(2)+' / week'+(breakdown.length===2?' ('+breakdown.join(' + ')+')':''));
+    setText('earnMonthly','~$'+(dailyUsd*30).toFixed(2)+' / month');
+
+    /* ── Payout: pick whichever pool is closer ── */
+    const moThresh=Store.getPayoutMin();
+    const umThresh=umData?parseFloat(umData.payment_threshold)||0.1:0.1;
+    const moRemain=moThresh-moPend;
+    const umRemain=umThresh-umBal;
+    const moDays=cpuDaily>0?moRemain/cpuDaily:Infinity;
+    const umDays=gpuDaily>0?umRemain/gpuDaily:Infinity;
+
+    let payoutPool,payoutDays,payoutProg,payoutLabel;
+    if(moDays<=umDays){
+      payoutPool='MoneroOcean (CPU)';
+      payoutDays=moDays;
+      payoutProg=Math.min(100,(moPend/moThresh)*100);
+      payoutLabel=moPend.toFixed(6)+' / '+moThresh+' XMR';
+    }else{
+      payoutPool='unMineable (GPU)';
+      payoutDays=umDays;
+      payoutProg=Math.min(100,(umBal/umThresh)*100);
+      payoutLabel=umBal.toFixed(6)+' / '+umThresh+' XMR';
+    }
+    $('payoutBar').style.width=payoutProg.toFixed(1)+'%';
+    setText('payoutPct',payoutProg.toFixed(0)+'% — '+payoutLabel);
+
+    if(payoutDays<=0){
+      setText('payoutEta',payoutPool+' — payout threshold reached');
+    }else if(isFinite(payoutDays)){
+      setText('payoutEta', payoutPool+' — '+(payoutDays<1
+        ?'~'+Math.ceil(payoutDays*24)+'h until payout'
+        :'~'+payoutDays.toFixed(1)+' days until payout'));
+    }
+  }else if(moPollCount>=3&&totalPend===0&&(moData?.hash||0)===0&&gpuDaily===0){
+    setText('earnDaily','No activity detected');
+    setText('earnWeekly','--');
+    setText('earnMonthly','--');
+    setText('payoutPct','0%');
+    setText('payoutEta','No hashrate on either pool — verify miners are running');
+  }else if(xmrPrice===0){
+    setText('earnDaily','Waiting for XMR price...');
+    setText('earnWeekly','--');
+    setText('earnMonthly','--');
+    const p=Math.min(100,(moPend/Store.getPayoutMin())*100);
+    $('payoutBar').style.width=p.toFixed(1)+'%';
+    setText('payoutPct',p.toFixed(0)+'%');
+    setText('payoutEta','Price data needed for projections');
+  }else{
+    setText('earnDaily',moPollCount<2?'Connecting to pools...':'Waiting for hashrate data...');
+    setText('earnWeekly','--');
+    setText('earnMonthly','--');
+    const p=Math.min(100,(moPend/Store.getPayoutMin())*100);
+    $('payoutBar').style.width=p.toFixed(1)+'%';
+    setText('payoutPct',p.toFixed(0)+'%');
+    setText('payoutEta',moPollCount<2?'First pool check in progress':'Miners may still be syncing with pools');
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Machine Management
+   ═══════════════════════════════════════════════════════════════════ */
+addBtn.addEventListener('click',()=>{
+  const ip=ipInput.value.trim();
+  if(ip&&!machines.has(ip)){ addMachine(ip); ipInput.value=''; }
+});
+ipInput.addEventListener('keydown',e=>{ if(e.key==='Enter') addBtn.click(); });
+
+function addFromHome(){
+  const inp=$('homeIpInput');
+  const ip=inp.value.trim();
+  if(ip&&!machines.has(ip)){ addMachine(ip); inp.value=''; }
+}
+
+function addMachine(ip){
+  Store.addIP(ip);
+  emptyMsg.style.display='none';
+  homeEmpty.style.display='none';
+  const id=esc(ip);
+
+  /* ── Mini card (Home) ── */
+  const mini=document.createElement('div');
+  mini.className='mini-card';
+  mini.id='mini_'+id;
+  mini.onclick=()=>{ showPage('details'); const el=$('card_'+id); if(el) el.scrollIntoView({behavior:'smooth',block:'start'}); };
+  mini.innerHTML=`
+    <div class="mini-card-header">
+      <span class="status-dot-sm dead" id="mdot_${id}"></span>
+      <span class="mini-card-name" id="mname_${id}">${ip}</span>
+    </div>
+    <div class="mini-stat"><span class="mini-stat-lbl">Running for</span><span class="mini-stat-val" id="mup_${id}">--</span></div>
+    <div class="mini-stat"><span class="mini-stat-lbl">Speed</span><span class="mini-stat-val" id="mhr_${id}">--</span></div>
+    <div class="mini-stat"><span class="mini-stat-lbl">Work done</span><span class="mini-stat-val" id="msh_${id}">--</span></div>
+  `;
+  miniGrid.appendChild(mini);
+
+  /* ── Detail card (Details page) ── */
+  const card=document.createElement('div');
+  card.className='card';
+  card.id='card_'+id;
+  card.innerHTML=`
+    <div class="card-head">
+      <span class="host"><span class="status-dot dead" id="dot_${id}"></span> ${ip}</span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="conn-info" id="conninfo_${id}">scanning...</span>
+        <button class="close-btn" onclick="removeMachine('${ip}')">&#x2715;</button>
+      </div>
+    </div>
+    <div class="section" id="cpuSection_${id}">
+      <div class="section-title"><span class="tag tag-cpu">CPU</span> Miner</div>
+      <div class="stats-grid">
+        <div class="stat-box"><div class="val" id="cpu_hr_${id}">--</div><div class="lbl">H/s</div></div>
+        <div class="stat-box"><div class="val" id="cpu_hr1m_${id}">--</div><div class="lbl">1m avg</div></div>
+        <div class="stat-box"><div class="val" id="cpu_peak_${id}">--</div><div class="lbl">Peak</div></div>
+        <div class="stat-box"><div class="val" id="cpu_acc_${id}">--</div><div class="lbl">Shares</div></div>
+      </div>
+      <div class="meta-grid">
+        <span class="meta-key">Algo</span><span class="meta-val" id="cpu_algo_${id}">--</span>
+        <span class="meta-key">Pool</span><span class="meta-val" id="cpu_pool_${id}">--</span>
+        <span class="meta-key">CPU</span><span class="meta-val" id="cpu_brand_${id}">--</span>
+        <span class="meta-key">Uptime</span><span class="meta-val" id="cpu_up_${id}">--</span>
+      </div>
+    </div>
+    <div class="section" id="gpuSection_${id}">
+      <div class="section-title"><span class="tag tag-gpu">GPU</span> Miner</div>
+      <div class="stats-grid">
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_hr_${id}">--</div><div class="lbl">Hash/s</div></div>
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_unit_${id}">--</div><div class="lbl">Unit</div></div>
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_acc_${id}">--</div><div class="lbl">Shares</div></div>
+        <div class="stat-box gpu-stat"><div class="val" id="gpu_rej_${id}">--</div><div class="lbl">Rejected</div></div>
+      </div>
+      <div class="meta-grid">
+        <span class="meta-key">Algo</span><span class="meta-val" id="gpu_algo_${id}">--</span>
+        <span class="meta-key">Pool</span><span class="meta-val" id="gpu_pool_${id}">--</span>
+        <span class="meta-key">Software</span><span class="meta-val" id="gpu_sw_${id}">--</span>
+        <span class="meta-key">Uptime</span><span class="meta-val" id="gpu_up_${id}">--</span>
+      </div>
+      <div class="gpu-cards" id="gpu_cards_${id}"></div>
+    </div>
+    <div class="section"><div class="chart-wrap"><canvas id="chart_${id}"></canvas></div></div>
+    <div class="controls">
+      <label>CPU Threads</label>
+      <input type="range" min="10" max="100" step="5" value="50" id="thr_${id}" oninput="document.getElementById('thrv_${id}').textContent=this.value+'%'" />
+      <span class="val-display" id="thrv_${id}">50%</span>
+      <button class="btn-sm" onclick="sendCmd('${ip}','set_threads',{value:+document.getElementById('thr_${id}').value})">Apply</button>
+      <button class="btn-sm" id="pauseBtn_${id}" onclick="togglePause('${ip}')">Pause</button>
+    </div>
+  `;
+  grid.appendChild(card);
+
+  /* ── Chart ── */
+  const isDark=document.documentElement.getAttribute('data-theme')==='dark';
+  const gCol=isDark?'#21262d':'#e8ebf0';
+  const lCol=isDark?'#6e7681':'#717a8e';
+  const ctx=$('chart_'+id).getContext('2d');
+  const chart=new Chart(ctx,{
+    type:'line',
+    data:{
+      labels:Array(MAX_HISTORY).fill(''),
+      datasets:[
+        {label:'CPU H/s',data:Array(MAX_HISTORY).fill(null),borderColor:'#4361ee',backgroundColor:'rgba(67,97,238,.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5},
+        {label:'GPU',data:Array(MAX_HISTORY).fill(null),borderColor:'#7c3aed',backgroundColor:'rgba(124,58,237,.06)',fill:true,tension:.3,pointRadius:0,borderWidth:1.5,yAxisID:'yGpu'}
+      ]
+    },
+    options:{
+      responsive:true,maintainAspectRatio:false,animation:false,
+      interaction:{mode:'index',intersect:false},
+      scales:{
+        x:{display:false},
+        y:{display:true,position:'left',grid:{color:gCol},ticks:{color:'#4361ee',font:{size:9}},title:{display:true,text:'CPU H/s',color:'#4361ee',font:{size:9}}},
+        yGpu:{display:true,position:'right',grid:{drawOnChartArea:false},ticks:{color:'#7c3aed',font:{size:9}},title:{display:true,text:'GPU',color:'#7c3aed',font:{size:9}}}
+      },
+      plugins:{legend:{display:true,labels:{boxWidth:10,font:{size:10},color:lCol}}}
+    }
+  });
+
+  const state={ws:null,chart,cpuHistory:[],gpuHistory:[],paused:false,reconnectTimer:null,pollTimer:null,connectedPort:null,connectedPath:null,lastData:null,online:false};
+  machines.set(ip,state);
+  scanPorts(ip);
+  updateFleetSummary();
+}
+
+function removeMachine(ip){
+  const state=machines.get(ip);
+  if(!state) return;
+  if(state.ws) state.ws.close();
+  if(state.reconnectTimer) clearTimeout(state.reconnectTimer);
+  if(state.pollTimer) clearTimeout(state.pollTimer);
+  if(state.chart) state.chart.destroy();
+  const id=esc(ip);
+  const el=$('card_'+id); if(el) el.remove();
+  const mel=$('mini_'+id); if(mel) mel.remove();
+  machines.delete(ip);
+  Store.removeIP(ip);
+  if(machines.size===0){ emptyMsg.style.display=''; homeEmpty.style.display='block'; }
+  updateFleetSummary();
+}
+window.removeMachine=removeMachine;
+
+/* ═══════════════════════════════════════════════════════════════════
+   Port Scanning & Connection
+   ═══════════════════════════════════════════════════════════════════ */
+function attemptWS(ip,entry,timeout){
+  return new Promise(resolve=>{
+    try{
+      const proto=entry.secure?'wss':'ws';
+      const ws=new WebSocket(`${proto}://${ip}:${entry.port}${entry.path}`);
+      let done=false;
+      const timer=setTimeout(()=>{ if(!done){done=true; try{ws.close();}catch{} resolve(null);} },timeout);
+      ws.onopen=()=>{ if(!done){done=true;clearTimeout(timer);resolve(ws);} else ws.close(); };
+      ws.onerror=()=>{ if(!done){done=true;clearTimeout(timer);resolve(null);} };
+      ws.onclose=()=>{ if(!done){done=true;clearTimeout(timer);resolve(null);} };
+    }catch{ resolve(null); }
+  });
+}
+
+async function attemptHTTP(ip,entry){
+  const proto=entry.secure?'https':'http';
+  const url=`${proto}://${ip}:${entry.port}${entry.path}`;
+  try{
+    const ctrl=new AbortController();
+    const timer=setTimeout(()=>ctrl.abort(),4000);
+    const r=await fetch(url,{mode:'cors',signal:ctrl.signal});
+    clearTimeout(timer);
+    if(!r.ok) return null;
+    const data=await r.json();
+    return data.stats?entry:null;
+  }catch{ return null; }
+}
+
+async function scanPorts(ip){
+  const state=machines.get(ip);
+  if(!state||state._scanning) return;
+  state._scanning=true;
+  const id=esc(ip);
+  const info=$('conninfo_'+id);
+  if(info) info.textContent='scanning...';
+
+  for(const entry of WS_PATHS){
+    if(!machines.has(ip)){state._scanning=false;return;}
+    const ws=await attemptWS(ip,entry,3500);
+    if(ws){ state._scanning=false; state.scanRetries=0; setupWS(ip,ws,entry); return; }
+  }
+
+  if(info) info.textContent='trying HTTP...';
+  for(const entry of HTTP_PATHS){
+    if(!machines.has(ip)){state._scanning=false;return;}
+    const found=await attemptHTTP(ip,entry);
+    if(found){ state._scanning=false; state.scanRetries=0; setupHTTPPoll(ip,found); return; }
+  }
+
+  state._scanning=false;
+  state.scanRetries=(state.scanRetries||0)+1;
+  const backoff=Math.min(120000,10000*Math.pow(1.5,state.scanRetries-1));
+  if(info) info.textContent='offline — retry in '+Math.round(backoff/1000)+'s';
+  state.reconnectTimer=setTimeout(()=>scanPorts(ip),backoff);
+}
+
+function setupHTTPPoll(ip,entry){
+  const state=machines.get(ip);
+  if(!state) return;
+  const id=esc(ip);
+  const proto=entry.secure?'https':'http';
+  const url=`${proto}://${ip}:${entry.port}${entry.path}`;
+  state.pollUrl=url; state.pollMode=true;
+  const info=$('conninfo_'+id), dot=$('dot_'+id), mdot=$('mdot_'+id);
+  if(info) info.textContent='HTTP :'+entry.port;
+  if(dot) dot.classList.remove('dead');
+  if(mdot) mdot.classList.remove('dead');
+  state.online=true;
+
+  let failCount=0;
+  function poll(){
+    if(!machines.has(ip)) return;
+    fetch(url,{mode:'cors'}).then(r=>r.json()).then(data=>{
+      failCount=0;
+      if(dot) dot.classList.remove('dead');
+      if(mdot) mdot.classList.remove('dead');
+      state.online=true;
+      if(data.stats) updateCard(ip,data.stats);
+      state.pollTimer=setTimeout(poll,POLL_INTERVAL);
+    }).catch(()=>{
+      failCount++;
+      if(dot) dot.classList.add('dead');
+      if(mdot) mdot.classList.add('dead');
+      state.online=false;
+      updateFleetSummary();
+      if(failCount>5){
+        if(info) info.textContent='lost, rescanning...';
+        state.pollMode=false;
+        state.scanRetries=(state.scanRetries||0)+1;
+        const bo=Math.min(120000,15000*Math.pow(1.5,state.scanRetries-1));
+        state.reconnectTimer=setTimeout(()=>scanPorts(ip),bo);
+      }else{
+        state.pollTimer=setTimeout(poll,POLL_INTERVAL);
+      }
+    });
+  }
+  poll();
+}
+
+function setupWS(ip,ws,entry){
+  const state=machines.get(ip);
+  if(!state) return;
+  const id=esc(ip);
+  state.ws=ws; state.connectedPort=entry.port; state.connectedPath=entry.path;
+  const info=$('conninfo_'+id), dot=$('dot_'+id), mdot=$('mdot_'+id);
+  if(info) info.textContent=':'+entry.port+(entry.path||'');
+  if(dot) dot.classList.remove('dead');
+  if(mdot) mdot.classList.remove('dead');
+  state.online=true; state.scanRetries=0; state.wsRetries=0;
+  updateFleetSummary();
+
+  ws.onmessage=evt=>{
+    try{
+      const msg=JSON.parse(evt.data);
+      if(msg.type==='stats'||msg.type==='status') updateCard(ip,msg.data);
+      else if(msg.data) updateCard(ip,msg.data);
+      else if(msg.cpu||msg.gpu) updateCard(ip,msg);
+    }catch{}
+  };
+  ws.onclose=()=>{
+    if(dot) dot.classList.add('dead');
+    if(mdot) mdot.classList.add('dead');
+    state.online=false; updateFleetSummary();
+    state.wsRetries=(state.wsRetries||0)+1;
+    const bo=Math.min(60000,5000*Math.pow(1.5,state.wsRetries-1));
+    if(info) info.textContent='reconnecting in '+Math.round(bo/1000)+'s...';
+    state.reconnectTimer=setTimeout(()=>connectWS(ip,entry.port,entry.path,entry.secure),bo);
+  };
+  ws.onerror=()=>{};
+}
+
+function connectWS(ip,port,path,secure){
+  const state=machines.get(ip);
+  if(!state) return;
+  if(!port){ scanPorts(ip); return; }
+  const id=esc(ip);
+  const proto=secure?'wss':'ws';
+  try{
+    const ws=new WebSocket(`${proto}://${ip}:${port}${path||''}`);
+    ws.onopen=()=>setupWS(ip,ws,{port,path,secure});
+    ws.onerror=()=>ws.close();
+    ws.onclose=()=>{
+      const dot=$('dot_'+id), mdot=$('mdot_'+id);
+      if(dot) dot.classList.add('dead');
+      if(mdot) mdot.classList.add('dead');
+      state.online=false; updateFleetSummary();
+      state.wsRetries=(state.wsRetries||0)+1;
+      const bo=Math.min(60000,5000*Math.pow(1.5,state.wsRetries-1));
+      state.reconnectTimer=setTimeout(()=>connectWS(ip,port,path,secure),bo);
+    };
+  }catch{
+    state.scanRetries=(state.scanRetries||0)+1;
+    const bo=Math.min(120000,15000*Math.pow(1.5,state.scanRetries-1));
+    state.reconnectTimer=setTimeout(()=>scanPorts(ip),bo);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Card Updates (Details + Home)
+   ═══════════════════════════════════════════════════════════════════ */
+function updateCard(ip,d){
+  const id=esc(ip);
+  const state=machines.get(ip);
+  if(!state) return;
+  state.lastData=d;
+
+  const cpu=d.cpu||d;
+  const gpu=d.gpu||null;
+
+  /* ── Detail card: CPU ── */
+  if(cpu&&cpu.hashrate_now!==undefined){
+    setText('cpu_hr_'+id,fmtHash(cpu.hashrate_now));
+    setText('cpu_hr1m_'+id,fmtHash(cpu.hashrate_1m||0));
+    setText('cpu_peak_'+id,fmtHash(cpu.hashrate_max||0));
+    setText('cpu_acc_'+id,(cpu.accepted||0)+'/'+(cpu.rejected||0));
+    setText('cpu_algo_'+id,cpu.algo||'--');
+    setText('cpu_pool_'+id,cpu.pool||'--');
+    setText('cpu_brand_'+id,cpu.cpu_brand||'--');
+    setText('cpu_up_'+id,fmtUptime(cpu.uptime||0));
+
+    if(cpu.hostname&&cpu.hostname!=='unknown'){
+      const host=document.querySelector('#card_'+id+' .host');
+      if(host) host.innerHTML=`<span class="status-dot" id="dot_${id}"></span> ${cpu.hostname} <span style="color:var(--dim);font-weight:400">(${ip})</span>`;
+    }
+    state.cpuHistory.push(cpu.hashrate_now||0);
+    if(state.cpuHistory.length>MAX_HISTORY) state.cpuHistory.shift();
+  }
+
+  /* ── Detail card: GPU ── */
+  if(gpu){
+    setText('gpu_hr_'+id,gpu.total_hashrate?gpu.total_hashrate.toFixed(2):'--');
+    setText('gpu_unit_'+id,gpu.hashrate_unit||'--');
+    setText('gpu_acc_'+id,(gpu.accepted||0)+'/'+(gpu.rejected||0));
+    setText('gpu_rej_'+id,gpu.stales||0);
+    setText('gpu_algo_'+id,gpu.algo||'--');
+    setText('gpu_pool_'+id,gpu.pool||'--');
+    setText('gpu_sw_'+id,gpu.software||'--');
+    setText('gpu_up_'+id,fmtUptime(gpu.uptime||0));
+    const gpuContainer=$('gpu_cards_'+id);
+    if(gpuContainer&&gpu.gpus&&gpu.gpus.length){
+      gpuContainer.innerHTML=gpu.gpus.map(g=>`
+        <div class="gpu-card">
+          <div class="gpu-name">${g.name||'GPU'}</div>
+          <div class="gpu-row">Hash <span>${typeof g.hashrate==='number'?g.hashrate.toFixed(2):'--'} ${gpu.hashrate_unit||''}</span></div>
+          <div class="gpu-row">Temp <span>${g.temp||0}&deg;C</span></div>
+          <div class="gpu-row">Fan <span>${g.fan||0}%</span></div>
+          <div class="gpu-row">Power <span>${g.power?g.power.toFixed(0)+'W':'--'}</span></div>
+        </div>
+      `).join('');
+    }
+    state.gpuHistory.push(gpu.total_hashrate||0);
+    if(state.gpuHistory.length>MAX_HISTORY) state.gpuHistory.shift();
+  }
+
+  /* ── Chart ── */
+  const ch=state.chart;
+  ch.data.datasets[0].data=pad(state.cpuHistory);
+  ch.data.datasets[1].data=pad(state.gpuHistory);
+  ch.data.labels=Array(MAX_HISTORY).fill('');
+  ch.update();
+
+  /* ── Mini card (Home) ── */
+  updateMiniCard(ip,d);
+  updateFleetSummary();
+}
+
+function updateMiniCard(ip,d){
+  const id=esc(ip);
+  const cpu=d.cpu||d;
+  const gpu=d.gpu||null;
+
+  const mdot=$('mdot_'+id);
+  if(mdot) mdot.classList.remove('dead');
+
+  if(cpu&&cpu.hostname&&cpu.hostname!=='unknown'){
+    setText('mname_'+id,cpu.hostname);
+  }
+
+  const maxUp=Math.max(cpu?.uptime||0, gpu?.uptime||0);
+  setText('mup_'+id,fmtUptime(maxUp));
+
+  let speedStr=fmtHash(cpu?.hashrate_now||0);
+  if(gpu&&gpu.total_hashrate){
+    speedStr+=' + '+gpu.total_hashrate.toFixed(1)+' '+(gpu.hashrate_unit||'');
+  }
+  setText('mhr_'+id,speedStr);
+
+  const shares=(cpu?.accepted||0)+(gpu?.accepted||0);
+  setText('msh_'+id,shares.toLocaleString());
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Fleet Summary (Home)
+   ═══════════════════════════════════════════════════════════════════ */
+function updateFleetSummary(){
+  let online=0,total=0,totalCpuHr=0,totalGpuHr=0,totalShares=0;
+  machines.forEach(state=>{
+    total++;
+    if(state.online){
+      online++;
+      if(state.lastData){
+        const cpu=state.lastData.cpu||state.lastData;
+        const gpu=state.lastData.gpu||null;
+        if(cpu) totalCpuHr+=(cpu.hashrate_now||0);
+        if(gpu) totalGpuHr+=(gpu.total_hashrate||0);
+        totalShares+=(cpu?.accepted||0)+(gpu?.accepted||0);
+      }
+    }
+  });
+
+  setText('fleetCount',online+' / '+total);
+  let speedStr=fmtHash(totalCpuHr);
+  if(totalGpuHr>0) speedStr+=' CPU + '+totalGpuHr.toFixed(1)+' MH/s GPU';
+  setText('fleetSpeed',speedStr);
+  setText('fleetShares',totalShares.toLocaleString());
+
+  const dot=$('hdrDot');
+  if(dot) dot.classList.toggle('ok',online>0);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Commands
+   ═══════════════════════════════════════════════════════════════════ */
+function sendCmd(ip,cmd,extra){
+  const state=machines.get(ip);
+  if(!state||!state.ws||state.ws.readyState!==1) return;
+  state.ws.send(JSON.stringify({cmd,...extra}));
+}
+window.sendCmd=sendCmd;
+
+function togglePause(ip){
+  const state=machines.get(ip);
+  if(!state) return;
+  const id=esc(ip);
+  state.paused=!state.paused;
+  sendCmd(ip,state.paused?'pause':'resume',{});
+  const btn=$('pauseBtn_'+id);
+  btn.textContent=state.paused?'Resume':'Pause';
+  btn.classList.toggle('active',state.paused);
+}
+window.togglePause=togglePause;
+
+/* ═══════════════════════════════════════════════════════════════════
+   Settings Modal
+   ═══════════════════════════════════════════════════════════════════ */
+function openSettings(){
+  $('settWallet').value=Store.getWallet();
+  $('settPayoutMin').value=Store.getPayoutMin();
+  renderSettingsIPs();
+  $('settingsModal').style.display='';
+}
+function closeSettings(){ $('settingsModal').style.display='none'; }
+
+function renderSettingsIPs(){
+  const list=$('settIPList');
+  const ips=Store.getIPs();
+  if(!ips.length){ list.innerHTML='<div style="font-size:12px;color:var(--dim);padding:8px 0">No saved servers.</div>'; return; }
+  list.innerHTML=ips.map(ip=>`
+    <div class="saved-ip-row">
+      <span>${ip}</span>
+      <button class="saved-ip-del" onclick="removeSettingsIP('${ip}')" title="Remove">&#x2715;</button>
+    </div>
+  `).join('');
+}
+window.removeSettingsIP=function(ip){
+  removeMachine(ip);
+  renderSettingsIPs();
+};
+
+function saveSettings(){
+  const newWallet=$('settWallet').value.trim();
+  const newMin=parseFloat($('settPayoutMin').value)||0.003;
+  const oldWallet=Store.getWallet();
+
+  Store.setWallet(newWallet);
+  Store.setPayoutMin(newMin);
+
+  if(newWallet&&newWallet!==oldWallet){
+    moSnaps=[];
+    moData=null; moWorkers=null; moGlobal=null;
+    umData=null; umDailyXmr=0;
+    startPoolPolling();
+  }
+  if(!newWallet){
+    moData=null; umData=null;
+    if(poolPollTimer) clearInterval(poolPollTimer);
+  }
+  updateEarnings();
+  closeSettings();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Helpers
+   ═══════════════════════════════════════════════════════════════════ */
+function esc(ip){ return ip.replace(/[^a-zA-Z0-9]/g,'_'); }
+function setText(id,v){ const el=$(id); if(el) el.textContent=v; }
+function pad(arr){ const out=Array(MAX_HISTORY).fill(null); arr.forEach((v,i)=>out[MAX_HISTORY-arr.length+i]=v); return out; }
+
+function fmtHash(v){
+  if(v===null||v===undefined) return '--';
+  if(v>=1e6) return (v/1e6).toFixed(2)+'M';
+  if(v>=1000) return (v/1000).toFixed(1)+'k';
+  return v.toFixed(1);
+}
+function fmtUptime(s){
+  const d=Math.floor(s/86400),h=Math.floor((s%86400)/3600),m=Math.floor((s%3600)/60);
+  if(d>0) return d+'d '+h+'h';
+  if(h>0) return h+'h '+m+'m';
+  return m+'m';
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Bootstrap & Init
+   ═══════════════════════════════════════════════════════════════════ */
+async function bootstrap(){
+  if(Store.isBootstrapped()) return;
+  try{
+    const r=await fetch('./fleet_config.json');
+    if(!r.ok) return;
+    const cfg=await r.json();
+    if(cfg.ips&&cfg.ips.length) Store.saveIPs(cfg.ips);
+    if(cfg.wallet) Store.setWallet(cfg.wallet);
+    if(cfg.theme) Store.setTheme(cfg.theme);
+  }catch{}
+  Store.markBootstrapped();
+}
+
+async function init(){
+  await bootstrap();
+
+  applyTheme(Store.getTheme());
+  updateClock();
+  setInterval(updateClock,1000);
+
+  const ips=Store.getIPs();
+  ips.forEach((ip,i)=>setTimeout(()=>addMachine(ip),i*2000));
+
+  fetchXMRPrice();
+  setInterval(fetchXMRPrice,120000);
+
+  if(Store.getWallet()){
+    startPoolPolling();
+  }
+  updateEarnings();
+  showPage('home');
+}
+
+window.addEventListener('DOMContentLoaded',init);
+</script>
+</body>
+</html>
