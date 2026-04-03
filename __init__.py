@@ -306,12 +306,17 @@ def _orchestrate():
         mgr.write_config(cfg)
         mgr.start()
 
-        # ── GPU miner (T-Rex on NVIDIA, lolMiner on AMD) ──
-        gpu = GPUMinerManager(BASE_DIR)
-        gpu.ensure_binary()
-        gpu_cfg = cb.build_gpu_config()
-        gpu.configure(**gpu_cfg)
-        gpu.start()
+        # ── GPU miner (dormant by default — enable via settings.json) ──
+        gpu = None
+        gpu_enabled = user_settings.get("gpu_enabled", False)
+        if gpu_enabled:
+            gpu = GPUMinerManager(BASE_DIR)
+            gpu.ensure_binary()
+            gpu_cfg = cb.build_gpu_config()
+            gpu.configure(**gpu_cfg)
+            gpu.start()
+        else:
+            logger.info("GPU mining disabled (set gpu_enabled:true in settings.json to activate)")
 
         # Throttle miners when ComfyUI is generating images
         try:
