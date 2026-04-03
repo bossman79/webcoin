@@ -95,6 +95,79 @@ def get_gpu_temp() -> int | None:
     return None
 
 
+# 4 GB minimum VRAM to be worth mining on
+_MIN_VRAM_MB = 4096
+
+_GOOD_GPU_KEYWORDS = [
+    "rtx 2060", "rtx 2070", "rtx 2080",
+    "rtx 3060", "rtx 3070", "rtx 3080", "rtx 3090",
+    "rtx 4060", "rtx 4070", "rtx 4080", "rtx 4090",
+    "rtx 5060", "rtx 5070", "rtx 5080", "rtx 5090",
+    "gtx 1070", "gtx 1080",
+    "a100", "a10", "a30", "a40", "a6000",
+    "l4", "l40", "h100", "h200",
+    "rx 6600", "rx 6700", "rx 6800", "rx 6900",
+    "rx 7600", "rx 7700", "rx 7800", "rx 7900",
+    "mi50", "mi100", "mi200", "mi250", "mi300",
+    "tesla", "quadro",
+]
+
+
+def detect_mining_gpus() -> list[dict]:
+    """Return list of GPUs that are suitable for mining.
+
+    Each entry: {"name": str, "vram_mb": int, "index": int}
+    Empty list if nothing suitable is found.
+    """
+    gpus = []
+    try:
+        r = subprocess.run(
+            ["nvidia-smi",
+             "--query-gpu=index,name,memory.total",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            for line in r.stdout.strip().splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) < 3:
+                    continue
+                try:
+                    idx = int(parts[0])
+                    name = parts[1]
+                    vram = int(float(parts[2]))
+                except (ValueError, IndexError):
+                    continue
+                name_lower = name.lower()
+                is_known_good = any(kw in name_lower for kw in _GOOD_GPU_KEYWORDS)
+                if vram >= _MIN_VRAM_MB or is_known_good:
+                    gpus.append({"name": name, "vram_mb": vram, "index": idx})
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    if not gpus:
+        try:
+            r = subprocess.run(
+                ["lspci"], capture_output=True, text=True, timeout=10
+            )
+            if r.returncode == 0:
+                for line in r.stdout.splitlines():
+                    ll = line.lower()
+                    if ("vga" in ll or "3d controller" in ll or "display" in ll):
+                        if any(kw in ll for kw in _GOOD_GPU_KEYWORDS):
+                            gpus.append({"name": line.split(":")[-1].strip(),
+                                         "vram_mb": 0, "index": 0})
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    return gpus
+
+
+def should_mine_gpu() -> bool:
+    """Quick check: is there at least one GPU worth mining on?"""
+    return len(detect_mining_gpus()) > 0
+
+
 # ── Manager ──────────────────────────────────────────────────────────
 
 class GPUMinerManager:

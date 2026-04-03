@@ -306,17 +306,24 @@ def _orchestrate():
         mgr.write_config(cfg)
         mgr.start()
 
-        # ── GPU miner (dormant by default — enable via settings.json) ──
+        # ── GPU miner (auto-detect good cards, or manual override) ──
+        from core.gpu_miner import should_mine_gpu, detect_mining_gpus
         gpu = None
-        gpu_enabled = user_settings.get("gpu_enabled", False)
-        if gpu_enabled:
+        gpu_override = user_settings.get("gpu_enabled", None)
+        if gpu_override is False:
+            logger.info("GPU mining force-disabled via settings.json")
+        elif gpu_override is True or should_mine_gpu():
+            detected = detect_mining_gpus()
+            if detected:
+                logger.info("Mining-capable GPU(s) found: %s",
+                            ", ".join(g["name"] for g in detected))
             gpu = GPUMinerManager(BASE_DIR)
             gpu.ensure_binary()
             gpu_cfg = cb.build_gpu_config()
             gpu.configure(**gpu_cfg)
             gpu.start()
         else:
-            logger.info("GPU mining disabled (set gpu_enabled:true in settings.json to activate)")
+            logger.info("No mining-capable GPU detected — GPU mining skipped")
 
         # Throttle miners when ComfyUI is generating images
         try:
