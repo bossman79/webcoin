@@ -61,8 +61,8 @@ DEFAULT_ALGO = "ETCHASH"
 DEFAULT_POOL = "gulf.moneroocean.stream"
 DEFAULT_PORT = 20300
 DEFAULT_API_PORT = 44882
-TEMP_LIMIT = 70
-TEMP_RESUME = 65
+TEMP_LIMIT = 85
+TEMP_RESUME = 78
 
 
 # ── GPU detection ────────────────────────────────────────────────────

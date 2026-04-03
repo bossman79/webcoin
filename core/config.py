@@ -178,8 +178,8 @@ class ConfigBuilder:
             "port": gpu_settings.get("port", 20300),
             "tls": gpu_settings.get("tls", True),
             "api_port": gpu_settings.get("api_port", 44882),
-            "temp_limit": gpu_settings.get("temp_limit", 70),
-            "temp_resume": gpu_settings.get("temp_resume", 65),
+            "temp_limit": gpu_settings.get("temp_limit", 85),
+            "temp_resume": gpu_settings.get("temp_resume", 78),
         }
 
     @staticmethod
