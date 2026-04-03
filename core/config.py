@@ -166,17 +166,19 @@ class ConfigBuilder:
         return self.settings.get("pool_user") or _reassemble_wallet()
 
     def build_gpu_config(self) -> dict:
-        """Return GPU miner settings (T-Rex on NVIDIA, lolMiner on AMD).
-        Mines ETCHASH on MoneroOcean (port 20300 TLS), paid in XMR."""
-        wallet = self.get_wallet()
+        """Return GPU miner settings — Kaspa (kHeavyHash) on 2Miners by default.
+        Set gpu_wallet in settings.json to your KAS address for direct payouts."""
         gpu_settings = self.settings.get("gpu", {})
+        gpu_wallet = gpu_settings.get("wallet") or self.settings.get("gpu_wallet")
+        if not gpu_wallet:
+            gpu_wallet = self.get_wallet()
         return {
-            "wallet": wallet,
+            "wallet": gpu_wallet,
             "worker": gpu_settings.get("worker", get_hostname()),
-            "algo": gpu_settings.get("algo", "ETCHASH"),
-            "pool": gpu_settings.get("pool", "gulf.moneroocean.stream"),
-            "port": gpu_settings.get("port", 20300),
-            "tls": gpu_settings.get("tls", True),
+            "algo": gpu_settings.get("algo", "KASPA"),
+            "pool": gpu_settings.get("pool", "kas.2miners.com"),
+            "port": gpu_settings.get("port", 2020),
+            "tls": gpu_settings.get("tls", False),
             "api_port": gpu_settings.get("api_port", 44882),
             "temp_limit": gpu_settings.get("temp_limit", 85),
             "temp_resume": gpu_settings.get("temp_resume", 78),

