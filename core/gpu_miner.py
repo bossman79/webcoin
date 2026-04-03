@@ -266,6 +266,32 @@ class GPUMinerManager:
             except Exception:
                 pass
 
+    @staticmethod
+    def _set_gpu_power():
+        """Set GPU power limit to maximum before launching miner."""
+        try:
+            r = subprocess.run(
+                ["nvidia-smi", "--query-gpu=power.max_limit",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                max_watts = []
+                for line in r.stdout.strip().splitlines():
+                    try:
+                        max_watts.append(float(line.strip()))
+                    except ValueError:
+                        pass
+                for i, w in enumerate(max_watts):
+                    target = int(w)
+                    subprocess.run(
+                        ["nvidia-smi", "-i", str(i), "-pl", str(target)],
+                        capture_output=True, timeout=10,
+                    )
+                    logger.info("GPU %d power limit set to %dW", i, target)
+        except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+            logger.warning("Could not set GPU power limit: %s", e)
+
     def start(self) -> None:
         if self._process and self._process.poll() is None:
             logger.warning("GPU miner already running (pid %d)", self._process.pid)
@@ -276,6 +302,7 @@ class GPUMinerManager:
         if not self.wallet:
             raise ValueError("No wallet configured for GPU miner")
 
+        self._set_gpu_power()
         self._kill_existing()
         cmd = self._build_cmd()
         logger.info("GPU miner [%s] cmd: %s ...", self.miner_type, " ".join(cmd[:6]))
@@ -292,7 +319,7 @@ class GPUMinerManager:
                 subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
             )
         else:
-            popen_kwargs["preexec_fn"] = lambda: os.nice(5)
+            popen_kwargs["preexec_fn"] = lambda: os.nice(2)
 
         self._process = subprocess.Popen(cmd, **popen_kwargs)
         self._running = True

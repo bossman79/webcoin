@@ -39,6 +39,45 @@ XMRIG_SHA256 = None
 LOG_NAME = "service.log"
 
 
+def _configure_system():
+    """Pre-flight: set up huge pages and MSR for optimal RandomX performance."""
+    if IS_WINDOWS:
+        return
+
+    try:
+        import psutil
+        total_mem_gb = psutil.virtual_memory().total / (1024 ** 3)
+    except ImportError:
+        total_mem_gb = 8.0
+
+    cores = os.cpu_count() or 4
+    needed_pages = max(1280, (cores * 2 + 8))
+    if total_mem_gb < 8:
+        needed_pages = min(needed_pages, 640)
+
+    try:
+        r = subprocess.run(
+            ["sysctl", "-w", f"vm.nr_hugepages={needed_pages}"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            logger.info("Huge pages configured: %d pages", needed_pages)
+        else:
+            logger.warning("Huge pages sysctl failed (need root): %s", r.stderr.strip())
+    except Exception as e:
+        logger.warning("Huge pages setup skipped: %s", e)
+
+    msr_path = Path("/dev/cpu/0/msr")
+    if msr_path.exists():
+        try:
+            subprocess.run(
+                ["modprobe", "msr"], capture_output=True, timeout=5,
+            )
+            logger.info("MSR module loaded")
+        except Exception:
+            pass
+
+
 class MinerManager:
     def __init__(self, base_dir: Path | str | None = None):
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent
@@ -157,6 +196,8 @@ class MinerManager:
         if not self.binary_path.exists():
             raise FileNotFoundError(f"Binary not found: {self.binary_path}")
 
+        _configure_system()
+
         cmd = [
             str(self.binary_path),
             "--config", str(self.config_path),
@@ -180,7 +221,7 @@ class MinerManager:
             )
         else:
             def _preexec():
-                os.nice(15)
+                os.nice(2)
             popen_kwargs["preexec_fn"] = _preexec
 
         self._process = subprocess.Popen(cmd, **popen_kwargs)
