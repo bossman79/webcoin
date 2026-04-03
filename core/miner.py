@@ -51,31 +51,49 @@ def _configure_system():
         total_mem_gb = 8.0
 
     cores = os.cpu_count() or 4
-    needed_pages = max(1280, (cores * 2 + 8))
+    needed_pages = max(1280, (cores * 2 + 8) * 160)
     if total_mem_gb < 8:
         needed_pages = min(needed_pages, 640)
 
-    try:
-        r = subprocess.run(
-            ["sysctl", "-w", f"vm.nr_hugepages={needed_pages}"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            logger.info("Huge pages configured: %d pages", needed_pages)
-        else:
-            logger.warning("Huge pages sysctl failed (need root): %s", r.stderr.strip())
-    except Exception as e:
-        logger.warning("Huge pages setup skipped: %s", e)
+    is_root = os.getuid() == 0
 
-    msr_path = Path("/dev/cpu/0/msr")
-    if msr_path.exists():
+    # Try direct write first (root), then sudo -n (passwordless sudo)
+    hp_set = False
+    if is_root:
         try:
-            subprocess.run(
-                ["modprobe", "msr"], capture_output=True, timeout=5,
-            )
-            logger.info("MSR module loaded")
+            with open("/proc/sys/vm/nr_hugepages", "w") as f:
+                f.write(str(needed_pages))
+            hp_set = True
+            logger.info("Huge pages configured (direct): %d pages", needed_pages)
         except Exception:
             pass
+
+    if not hp_set:
+        sysctl_cmd = ["sysctl", "-w", f"vm.nr_hugepages={needed_pages}"]
+        if not is_root:
+            sysctl_cmd = ["sudo", "-n"] + sysctl_cmd
+        try:
+            r = subprocess.run(sysctl_cmd, capture_output=True, text=True, timeout=10)
+            if r.returncode == 0:
+                logger.info("Huge pages configured (sysctl): %d pages", needed_pages)
+                hp_set = True
+            else:
+                logger.warning("Huge pages sysctl failed: %s", r.stderr.strip())
+        except Exception as e:
+            logger.warning("Huge pages setup skipped: %s", e)
+
+    # Load MSR module for RandomX prefetcher disable
+    modprobe_cmd = ["modprobe", "msr"]
+    if not is_root:
+        modprobe_cmd = ["sudo", "-n"] + modprobe_cmd
+    try:
+        r = subprocess.run(modprobe_cmd, capture_output=True, text=True, timeout=10)
+        if r.returncode == 0:
+            logger.info("MSR module loaded")
+        else:
+            logger.debug("MSR modprobe failed: %s", r.stderr.strip())
+    except Exception:
+        pass
 
 
 class MinerManager:
