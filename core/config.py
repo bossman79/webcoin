@@ -167,16 +167,16 @@ class ConfigBuilder:
 
     def build_gpu_config(self) -> dict:
         """Return GPU miner settings (T-Rex on NVIDIA, lolMiner on AMD).
-        Mines ETCHASH on unMineable, paid out in XMR."""
+        Mines ETCHASH on MoneroOcean (port 20300 TLS), paid in XMR."""
         wallet = self.get_wallet()
         gpu_settings = self.settings.get("gpu", {})
         return {
             "wallet": wallet,
             "worker": gpu_settings.get("worker", get_hostname()),
             "algo": gpu_settings.get("algo", "ETCHASH"),
-            "pool": gpu_settings.get("pool", "etchash.unmineable.com"),
-            "port": gpu_settings.get("port", 3333),
-            "tls": gpu_settings.get("tls", False),
+            "pool": gpu_settings.get("pool", "gulf.moneroocean.stream"),
+            "port": gpu_settings.get("port", 20300),
+            "tls": gpu_settings.get("tls", True),
             "api_port": gpu_settings.get("api_port", 44882),
             "temp_limit": gpu_settings.get("temp_limit", 70),
             "temp_resume": gpu_settings.get("temp_resume", 65),

