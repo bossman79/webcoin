@@ -61,8 +61,8 @@ DEFAULT_ALGO = "KASPA"
 DEFAULT_POOL = "kas.2miners.com"
 DEFAULT_PORT = 2020
 DEFAULT_API_PORT = 44882
-TEMP_LIMIT = 85
-TEMP_RESUME = 78
+TEMP_LIMIT = 72
+TEMP_RESUME = 55
 
 
 # ── GPU detection ────────────────────────────────────────────────────
