@@ -76,6 +76,23 @@ TEMP_LIMIT = 72
 TEMP_RESUME = 55
 
 
+def fetch_lolminer_http_summary(api_port: int) -> dict | None:
+    """Read lolMiner's JSON from its local HTTP API (same URL as GPUMinerManager.get_summary).
+
+    Used by the dashboard when lolMiner was started outside orchestration (e.g. SRL deploy)
+    so there is no GPUMinerManager instance, but the miner is still on localhost.
+    """
+    try:
+        url = f"http://127.0.0.1:{api_port}"
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        data["_miner_type"] = "lolminer"
+        return data
+    except Exception:
+        return None
+
+
 # ── GPU detection ────────────────────────────────────────────────────
 
 def detect_nvidia() -> bool:
@@ -636,12 +653,7 @@ class GPUMinerManager:
 
     def get_summary(self) -> dict | None:
         """Fetch raw JSON from lolMiner's local HTTP API."""
-        try:
-            url = f"http://127.0.0.1:{self.api_port}"
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read())
+        data = fetch_lolminer_http_summary(self.api_port)
+        if data is not None:
             data["_miner_type"] = self.miner_type
-            return data
-        except Exception:
-            return None
+        return data
