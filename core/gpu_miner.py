@@ -168,6 +168,9 @@ def detect_mining_gpus() -> list[dict]:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
+    if not gpus and IS_WINDOWS:
+        gpus = _detect_gpus_windows_wmi()
+
     if not gpus:
         try:
             r = subprocess.run(
@@ -184,6 +187,49 @@ def detect_mining_gpus() -> list[dict]:
             pass
 
     return gpus
+
+
+def _detect_gpus_windows_wmi() -> list[dict]:
+    """Detect display adapters on Windows when nvidia-smi is absent (e.g. AMD-only rigs)."""
+    if not IS_WINDOWS:
+        return []
+    try:
+        r = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if r.returncode != 0 or not r.stdout.strip():
+            return []
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    found: list[dict] = []
+    for raw in r.stdout.strip().splitlines():
+        name = raw.strip()
+        if not name:
+            continue
+        low = name.lower()
+        if "microsoft" in low and "basic" in low:
+            continue
+        if "parsec" in low or "sunshine" in low or "virtual" in low:
+            continue
+        if "intel" in low and "uhd" in low:
+            continue
+        is_good = any(kw in low for kw in _GOOD_GPU_KEYWORDS)
+        if not is_good:
+            continue
+        # index -1: let lolMiner pick devices (WMI order != OpenCL/CUDA index)
+        found.append({"name": name, "vram_mb": 0, "index": -1})
+
+    return found
 
 
 def should_mine_gpu() -> bool:

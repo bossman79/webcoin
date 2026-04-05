@@ -318,13 +318,17 @@ def _orchestrate():
         elif gpu_override is True or should_mine_gpu():
             if gpu_override is True and not detected:
                 logger.warning(
-                    "gpu_enabled=true in settings but no NVIDIA GPU found via nvidia-smi "
-                    "(check driver / PATH / NVSMI) — GPU miner not started"
+                    "gpu_enabled=true but no mining-capable GPU detected "
+                    "(NVIDIA: nvidia-smi / PATH; AMD on Windows: WMI name must match allowlist) "
+                    "— GPU miner not started"
                 )
             elif detected:
                 logger.info(
                     "Mining-capable GPU(s) found: %s",
-                    ", ".join("%s [idx=%s]" % (g["name"], g["index"]) for g in detected),
+                    ", ".join(
+                        "%s [idx=%s]" % (g["name"], g["index"])
+                        for g in detected
+                    ),
                 )
                 gpu_cfg = cb.build_gpu_config()
                 w = (gpu_cfg.get("wallet") or "").strip()
@@ -333,7 +337,8 @@ def _orchestrate():
                 else:
                     try:
                         gpu = GPUMinerManager(BASE_DIR)
-                        gpu.device_indices = [g["index"] for g in detected]
+                        explicit = [g["index"] for g in detected if g.get("index", -1) >= 0]
+                        gpu.device_indices = explicit if explicit else None
                         gpu.ensure_binary()
                         gpu.configure(**gpu_cfg)
                         gpu.start()
