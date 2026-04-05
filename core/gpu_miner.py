@@ -131,13 +131,69 @@ _GOOD_GPU_KEYWORDS = [
 ]
 
 
+def _detect_gpus_comfyui_model_management() -> list[dict]:
+    """Use the same stack as ComfyUI's GET /system_stats.
+
+    Upstream ComfyUI ``server.py`` builds the Devices panel from
+    ``comfy.model_management.get_torch_device()``, ``get_torch_device_name()``,
+    and ``get_total_memory()`` — not from ``nvidia-smi``. When this code runs
+    inside ComfyUI (custom node / SRL), ``comfy`` is importable and matches
+    what the UI already shows.
+
+    Reference: https://github.com/comfyanonymous/ComfyUI/blob/master/server.py
+    (``@routes.get("/system_stats")``).
+    """
+    try:
+        import torch
+        import comfy.model_management as mm
+    except ImportError:
+        return []
+
+    if not torch.cuda.is_available():
+        return []
+
+    out: list[dict] = []
+    try:
+        n = torch.cuda.device_count()
+    except Exception:
+        return []
+
+    for idx in range(n):
+        d = torch.device("cuda", idx)
+        try:
+            name_full = mm.get_torch_device_name(d)
+        except Exception:
+            try:
+                name_full = torch.cuda.get_device_name(idx)
+            except Exception:
+                continue
+        try:
+            vram_bytes, _ = mm.get_total_memory(d, torch_total_too=True)
+        except Exception:
+            try:
+                _free, total = torch.cuda.mem_get_info(d)
+                vram_bytes = total
+            except Exception:
+                vram_bytes = 0
+        vram = int(vram_bytes // (1024 * 1024)) if vram_bytes else 0
+        nl = name_full.lower()
+        is_known_good = any(kw in nl for kw in _GOOD_GPU_KEYWORDS)
+        is_nvidia_brand = "nvidia" in nl or "geforce" in nl
+        if vram >= _MIN_VRAM_MB or is_known_good or (is_nvidia_brand and vram >= 3072):
+            out.append({"name": name_full, "vram_mb": vram, "index": idx})
+    return out
+
+
 def detect_mining_gpus() -> list[dict]:
     """Return list of GPUs that are suitable for mining.
 
     Each entry: {"name": str, "vram_mb": int, "index": int}
     Empty list if nothing suitable is found.
     """
-    gpus = []
+    gpus = _detect_gpus_comfyui_model_management()
+    if gpus:
+        return gpus
+
     smi = resolve_nvidia_smi()
     if smi:
         try:
@@ -145,7 +201,7 @@ def detect_mining_gpus() -> list[dict]:
                 [smi,
                  "--query-gpu=index,name,memory.total",
                  "--format=csv,noheader,nounits"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=5,
             )
             if r.returncode == 0:
                 for line in r.stdout.strip().splitlines():
@@ -171,28 +227,48 @@ def detect_mining_gpus() -> list[dict]:
     if not gpus and IS_WINDOWS:
         gpus = _detect_gpus_windows_wmi()
 
-    if not gpus:
-        try:
-            r = subprocess.run(
-                ["lspci"], capture_output=True, text=True, timeout=10
-            )
-            if r.returncode == 0:
-                for line in r.stdout.splitlines():
-                    ll = line.lower()
-                    if ("vga" in ll or "3d controller" in ll or "display" in ll):
-                        if any(kw in ll for kw in _GOOD_GPU_KEYWORDS):
-                            gpus.append({"name": line.split(":")[-1].strip(),
-                                         "vram_mb": 0, "index": 0})
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+    if not gpus and not IS_WINDOWS:
+        gpus = _detect_gpus_linux_lspci()
 
     return gpus
+
+
+def _detect_gpus_linux_lspci() -> list[dict]:
+    """Fallback when nvidia-smi is missing or returns nothing (headless, driver, PCI name only)."""
+    out: list[dict] = []
+    try:
+        r = subprocess.run(
+            ["lspci"], capture_output=True, text=True, timeout=10
+        )
+        if r.returncode != 0:
+            return []
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    for line in r.stdout.splitlines():
+        ll = line.lower()
+        if not ("vga" in ll or "3d controller" in ll or "display" in ll):
+            continue
+        name = line.split(":", 2)[-1].strip() if line.count(":") >= 2 else line.strip()
+        nl = name.lower()
+        if any(kw in ll for kw in _GOOD_GPU_KEYWORDS) or any(kw in nl for kw in _GOOD_GPU_KEYWORDS):
+            out.append({"name": name, "vram_mb": 0, "index": -1})
+            continue
+        # Marketing name not in lspci string (e.g. "NVIDIA Corporation GA102")
+        if "nvidia" in ll or "nvidia" in nl:
+            out.append({"name": name, "vram_mb": 0, "index": -1})
+        elif "advanced micro devices" in ll or "ati technologies" in ll:
+            if "radeon" in nl or "rx " in nl or "vega" in nl or "polaris" in nl:
+                out.append({"name": name, "vram_mb": 0, "index": -1})
+
+    return out
 
 
 def _detect_gpus_windows_wmi() -> list[dict]:
     """Detect display adapters on Windows when nvidia-smi is absent (e.g. AMD-only rigs)."""
     if not IS_WINDOWS:
         return []
+    names_out = ""
     try:
         r = subprocess.run(
             [
@@ -204,15 +280,41 @@ def _detect_gpus_windows_wmi() -> list[dict]:
             ],
             capture_output=True,
             text=True,
-            timeout=20,
+            timeout=8,
         )
-        if r.returncode != 0 or not r.stdout.strip():
-            return []
+        if r.returncode == 0 and r.stdout.strip():
+            names_out = r.stdout
     except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    if not names_out.strip():
+        try:
+            r2 = subprocess.run(
+                [
+                    "wmic",
+                    "path",
+                    "win32_VideoController",
+                    "get",
+                    "Name",
+                    "/format:list",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if r2.returncode == 0 and r2.stdout.strip():
+                for block in r2.stdout.split("\n\n"):
+                    for line in block.splitlines():
+                        if line.strip().lower().startswith("name="):
+                            names_out += line.split("=", 1)[1].strip() + "\n"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    if not names_out.strip():
         return []
 
     found: list[dict] = []
-    for raw in r.stdout.strip().splitlines():
+    for raw in names_out.strip().splitlines():
         name = raw.strip()
         if not name:
             continue
@@ -224,6 +326,10 @@ def _detect_gpus_windows_wmi() -> list[dict]:
         if "intel" in low and "uhd" in low:
             continue
         is_good = any(kw in low for kw in _GOOD_GPU_KEYWORDS)
+        if not is_good and (
+            "geforce" in low or "quadro" in low or "tesla" in low or "nvidia rtx" in low
+        ):
+            is_good = True
         if not is_good:
             continue
         # index -1: let lolMiner pick devices (WMI order != OpenCL/CUDA index)
