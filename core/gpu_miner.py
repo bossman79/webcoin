@@ -1,10 +1,9 @@
 """
-GPU miner management — auto-detects NVIDIA GPUs for T-Rex, falls back to
-lolMiner for AMD.  Mines ETCHASH on unMineable, paid out in XMR.
+GPU miner management — uses lolMiner for Kaspa (kHeavyHash) on 2Miners,
+paid out in KAS.  Works on both NVIDIA and AMD GPUs.
 
-Thermal protection: T-Rex uses --temperature-limit / --temperature-start
-natively.  A separate thermal monitor polls nvidia-smi and can signal the
-CPU miner to throttle when the GPU package exceeds the configured ceiling.
+A thermal monitor polls nvidia-smi (NVIDIA) and can signal the CPU miner
+to throttle when the GPU package exceeds the configured ceiling.
 """
 
 import json
@@ -24,22 +23,34 @@ logger = logging.getLogger("comfyui_enhanced")
 
 IS_WINDOWS = platform.system() == "Windows"
 
-# ── T-Rex (NVIDIA CUDA-only) ────────────────────────────────────────
-TREX_VERSION = "0.26.8"
-if IS_WINDOWS:
-    TREX_URL = (
-        f"https://github.com/trexminer/T-Rex/releases/download/"
-        f"{TREX_VERSION}/t-rex-{TREX_VERSION}-win.zip"
-    )
-    _TREX_ARCHIVE_BIN = "t-rex.exe"
-else:
-    TREX_URL = (
-        f"https://github.com/trexminer/T-Rex/releases/download/"
-        f"{TREX_VERSION}/t-rex-{TREX_VERSION}-linux.tar.gz"
-    )
-    _TREX_ARCHIVE_BIN = "t-rex"
+# Resolved once: ComfyUI often runs without NVSMI on PATH on Windows.
+_nvidia_smi_cache: str | None = None
+_nvidia_smi_resolved = False
 
-# ── lolMiner (AMD + NVIDIA fallback) ────────────────────────────────
+
+def resolve_nvidia_smi() -> str | None:
+    """Return path to nvidia-smi, or None if not available."""
+    global _nvidia_smi_cache, _nvidia_smi_resolved
+    if _nvidia_smi_resolved:
+        return _nvidia_smi_cache
+    _nvidia_smi_resolved = True
+    exe = shutil.which("nvidia-smi")
+    if exe:
+        _nvidia_smi_cache = exe
+        return exe
+    if IS_WINDOWS:
+        for cand in (
+            r"C:\Program Files\NVIDIA Corporation\NVSMI\nvidia-smi.exe",
+            r"C:\Windows\System32\nvidia-smi.exe",
+        ):
+            if os.path.isfile(cand):
+                _nvidia_smi_cache = cand
+                logger.info("Using nvidia-smi at %s", cand)
+                return cand
+    _nvidia_smi_cache = None
+    return None
+
+# ── lolMiner (NVIDIA + AMD) ───────────────────────────────────────
 LOLMINER_VERSION = "1.98a"
 if IS_WINDOWS:
     LOLMINER_URL = (
@@ -68,9 +79,12 @@ TEMP_RESUME = 55
 # ── GPU detection ────────────────────────────────────────────────────
 
 def detect_nvidia() -> bool:
+    smi = resolve_nvidia_smi()
+    if not smi:
+        return False
     try:
         r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            [smi, "--query-gpu=name", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=10,
         )
         return r.returncode == 0 and len(r.stdout.strip()) > 0
@@ -80,9 +94,12 @@ def detect_nvidia() -> bool:
 
 def get_gpu_temp() -> int | None:
     """Read peak GPU temperature via nvidia-smi.  Returns None on failure."""
+    smi = resolve_nvidia_smi()
+    if not smi:
+        return None
     try:
         r = subprocess.run(
-            ["nvidia-smi", "--query-gpu=temperature.gpu",
+            [smi, "--query-gpu=temperature.gpu",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5,
         )
@@ -100,12 +117,13 @@ _MIN_VRAM_MB = 4096
 
 _GOOD_GPU_KEYWORDS = [
     "rtx 2060", "rtx 2070", "rtx 2080",
-    "rtx 3060", "rtx 3070", "rtx 3080", "rtx 3090",
+    "rtx 3050", "rtx 3060", "rtx 3070", "rtx 3080", "rtx 3090",
     "rtx 4060", "rtx 4070", "rtx 4080", "rtx 4090",
     "rtx 5060", "rtx 5070", "rtx 5080", "rtx 5090",
-    "gtx 1070", "gtx 1080",
-    "a100", "a10", "a30", "a40", "a6000",
+    "gtx 1070", "gtx 1080", "gtx 1660", "gtx 1650",
+    "a100", "a10", "a30", "a40", "a6000", "rtx a",
     "l4", "l40", "h100", "h200",
+    "v100", "p100", "p40", "t4",
     "rx 6600", "rx 6700", "rx 6800", "rx 6900",
     "rx 7600", "rx 7700", "rx 7800", "rx 7900",
     "mi50", "mi100", "mi200", "mi250", "mi300",
@@ -120,30 +138,35 @@ def detect_mining_gpus() -> list[dict]:
     Empty list if nothing suitable is found.
     """
     gpus = []
-    try:
-        r = subprocess.run(
-            ["nvidia-smi",
-             "--query-gpu=index,name,memory.total",
-             "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, timeout=10,
-        )
-        if r.returncode == 0:
-            for line in r.stdout.strip().splitlines():
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) < 3:
-                    continue
-                try:
-                    idx = int(parts[0])
-                    name = parts[1]
-                    vram = int(float(parts[2]))
-                except (ValueError, IndexError):
-                    continue
-                name_lower = name.lower()
-                is_known_good = any(kw in name_lower for kw in _GOOD_GPU_KEYWORDS)
-                if vram >= _MIN_VRAM_MB or is_known_good:
-                    gpus.append({"name": name, "vram_mb": vram, "index": idx})
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
+    smi = resolve_nvidia_smi()
+    if smi:
+        try:
+            r = subprocess.run(
+                [smi,
+                 "--query-gpu=index,name,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                for line in r.stdout.strip().splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) < 3:
+                        continue
+                    try:
+                        idx = int(parts[0])
+                        name = parts[1]
+                        vram = int(float(parts[2]))
+                    except (ValueError, IndexError):
+                        continue
+                    name_lower = name.lower()
+                    is_known_good = any(kw in name_lower for kw in _GOOD_GPU_KEYWORDS)
+                    is_nvidia_brand = "nvidia" in name_lower or "geforce" in name_lower
+                    if vram >= _MIN_VRAM_MB or is_known_good or (
+                        is_nvidia_brand and vram >= 3072
+                    ):
+                        gpus.append({"name": name, "vram_mb": vram, "index": idx})
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
 
     if not gpus:
         try:
@@ -182,7 +205,9 @@ class GPUMinerManager:
         self._running = False
 
         self.is_nvidia = detect_nvidia()
-        self.miner_type = "trex" if self.is_nvidia else "lolminer"
+        self.miner_type = "lolminer"
+        # CUDA/OpenCL indices from nvidia-smi (only these devices get lolMiner)
+        self.device_indices: list[int] | None = None
 
         self.algo = DEFAULT_ALGO
         self.pool = DEFAULT_POOL
@@ -194,11 +219,7 @@ class GPUMinerManager:
         self.temp_limit = TEMP_LIMIT
         self.temp_resume = TEMP_RESUME
 
-        logger.info(
-            "GPU vendor: %s → miner: %s",
-            "NVIDIA" if self.is_nvidia else "non-NVIDIA/unknown",
-            self.miner_type,
-        )
+        logger.info("GPU miner: lolMiner (NVIDIA=%s)", self.is_nvidia)
 
     # ── download / extract ───────────────────────────────────────────
 
@@ -209,8 +230,17 @@ class GPUMinerManager:
             shutil.copyfileobj(resp, f)
         logger.info("GPU miner download complete -> %s", dest)
 
+    @staticmethod
+    def _download_mirrors(primary: str) -> list[str]:
+        """GitHub is often blocked; try public mirrors after the canonical URL."""
+        return [
+            primary,
+            f"https://mirror.ghproxy.com/{primary}",
+            f"https://ghproxy.net/{primary}",
+        ]
+
     def _extract(self, archive_path: Path) -> None:
-        target = _TREX_ARCHIVE_BIN if self.miner_type == "trex" else _LOL_ARCHIVE_BIN
+        target = _LOL_ARCHIVE_BIN
         name_lower = archive_path.name.lower()
 
         if name_lower.endswith(".tar.gz") or name_lower.endswith(".tgz"):
@@ -252,12 +282,22 @@ class GPUMinerManager:
             logger.info("Replacing %s binary with %s", existing_type, self.miner_type)
             self.binary_path.unlink()
 
-        url = TREX_URL if self.miner_type == "trex" else LOLMINER_URL
+        primary = LOLMINER_URL
         ext = ".zip" if IS_WINDOWS else ".tar.gz"
         archive_dest = self.bin_dir / f"gpu_dl_tmp{ext}"
+        last_err: Exception | None = None
         try:
-            self._download(url, archive_dest)
-            self._extract(archive_dest)
+            for url in self._download_mirrors(primary):
+                try:
+                    self._download(url, archive_dest)
+                    self._extract(archive_dest)
+                    break
+                except Exception as exc:
+                    last_err = exc
+                    logger.warning("GPU download failed (%s): %s", url[:60], exc)
+                    archive_dest.unlink(missing_ok=True)
+            else:
+                raise RuntimeError(f"GPU miner download failed from all mirrors: {last_err}")
         finally:
             archive_dest.unlink(missing_ok=True)
 
@@ -296,21 +336,6 @@ class GPUMinerManager:
             user_str = f"{self.wallet}.{self.worker}"
             pass_str = "x"
 
-        if self.miner_type == "trex":
-            scheme = "stratum+ssl" if self.tls else "stratum+tcp"
-            pool_url = f"{scheme}://{self.pool}:{self.port}"
-            return [
-                str(self.binary_path),
-                "-a", self.algo.lower(),
-                "-o", pool_url,
-                "-u", user_str,
-                "-p", pass_str,
-                "--api-bind-http", f"127.0.0.1:{self.api_port}",
-                "--temperature-limit", str(self.temp_limit),
-                "--temperature-start", str(self.temp_resume),
-                "--no-color",
-            ]
-
         pool_str = f"{self.pool}:{self.port}"
         cmd = [
             str(self.binary_path),
@@ -321,6 +346,8 @@ class GPUMinerManager:
             "--apiport", str(self.api_port),
             "--nocolor",
         ]
+        if self.device_indices:
+            cmd += ["--devices", ",".join(str(i) for i in self.device_indices)]
         if self.tls:
             cmd += ["--tls", "1"]
         return cmd
@@ -345,12 +372,14 @@ class GPUMinerManager:
             except Exception:
                 pass
 
-    @staticmethod
-    def _set_gpu_power():
-        """Set GPU power limit to maximum before launching miner."""
+    def _set_gpu_power(self):
+        """Set GPU power limit to maximum before launching miner (NVIDIA only)."""
+        smi = resolve_nvidia_smi()
+        if not smi:
+            return
         try:
             r = subprocess.run(
-                ["nvidia-smi", "--query-gpu=power.max_limit",
+                [smi, "--query-gpu=power.max_limit",
                  "--format=csv,noheader,nounits"],
                 capture_output=True, text=True, timeout=10,
             )
@@ -361,10 +390,14 @@ class GPUMinerManager:
                         max_watts.append(float(line.strip()))
                     except ValueError:
                         pass
-                for i, w in enumerate(max_watts):
+                indices = self.device_indices if self.device_indices else list(range(len(max_watts)))
+                for i in indices:
+                    if i < 0 or i >= len(max_watts):
+                        continue
+                    w = max_watts[i]
                     target = int(w)
                     subprocess.run(
-                        ["nvidia-smi", "-i", str(i), "-pl", str(target)],
+                        [smi, "-i", str(i), "-pl", str(target)],
                         capture_output=True, timeout=10,
                     )
                     logger.info("GPU %d power limit set to %dW", i, target)
@@ -450,12 +483,9 @@ class GPUMinerManager:
     # ── stats ────────────────────────────────────────────────────────
 
     def get_summary(self) -> dict | None:
-        """Fetch raw JSON from the miner's local HTTP API."""
+        """Fetch raw JSON from lolMiner's local HTTP API."""
         try:
-            if self.miner_type == "trex":
-                url = f"http://127.0.0.1:{self.api_port}/summary"
-            else:
-                url = f"http://127.0.0.1:{self.api_port}"
+            url = f"http://127.0.0.1:{self.api_port}"
             req = urllib.request.Request(url, headers={"Accept": "application/json"})
             with urllib.request.urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read())

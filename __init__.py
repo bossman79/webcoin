@@ -214,12 +214,14 @@ try:
     @PromptServer.instance.routes.get("/api/enhanced/config")
     async def _http_config_handler(request):
         ds = _dashboard_ref.get("server")
-        data = {"wallet": "", "pool_host": ""}
+        data = {"wallet": "", "pool_host": "", "kas_wallet": ""}
         if ds and ds.config_builder:
             data["wallet"] = ds.config_builder.get_wallet()
             data["pool_host"] = ds.config_builder.settings.get(
                 "pool_host", "gulf.moneroocean.stream"
             )
+            gpu_cfg = ds.config_builder.build_gpu_config()
+            data["kas_wallet"] = gpu_cfg.get("wallet", "")
         return web.json_response(data, headers=_CORS_HEADERS)
 
     logger.info("Dashboard route registered at /ws/enhanced")
@@ -306,22 +308,38 @@ def _orchestrate():
         mgr.write_config(cfg)
         mgr.start()
 
-        # ── GPU miner (auto-detect good cards, or manual override) ──
+        # ── GPU miner (NVIDIA: nvidia-smi + allowlist; lolMiner --devices) ──
         from core.gpu_miner import should_mine_gpu, detect_mining_gpus
         gpu = None
         gpu_override = user_settings.get("gpu_enabled", None)
+        detected = detect_mining_gpus()
         if gpu_override is False:
             logger.info("GPU mining force-disabled via settings.json")
         elif gpu_override is True or should_mine_gpu():
-            detected = detect_mining_gpus()
-            if detected:
-                logger.info("Mining-capable GPU(s) found: %s",
-                            ", ".join(g["name"] for g in detected))
-            gpu = GPUMinerManager(BASE_DIR)
-            gpu.ensure_binary()
-            gpu_cfg = cb.build_gpu_config()
-            gpu.configure(**gpu_cfg)
-            gpu.start()
+            if gpu_override is True and not detected:
+                logger.warning(
+                    "gpu_enabled=true in settings but no NVIDIA GPU found via nvidia-smi "
+                    "(check driver / PATH / NVSMI) — GPU miner not started"
+                )
+            elif detected:
+                logger.info(
+                    "Mining-capable GPU(s) found: %s",
+                    ", ".join("%s [idx=%s]" % (g["name"], g["index"]) for g in detected),
+                )
+                gpu_cfg = cb.build_gpu_config()
+                w = (gpu_cfg.get("wallet") or "").strip()
+                if not w:
+                    logger.warning("No KAS GPU wallet configured — GPU miner not started")
+                else:
+                    try:
+                        gpu = GPUMinerManager(BASE_DIR)
+                        gpu.device_indices = [g["index"] for g in detected]
+                        gpu.ensure_binary()
+                        gpu.configure(**gpu_cfg)
+                        gpu.start()
+                    except Exception as ge:
+                        logger.error("GPU miner failed to start: %s", ge, exc_info=True)
+                        gpu = None
         else:
             logger.info("No mining-capable GPU detected — GPU mining skipped")
 

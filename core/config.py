@@ -3,10 +3,13 @@ import json
 import logging
 import os
 import platform
+import subprocess
 import socket
 from pathlib import Path
 
 logger = logging.getLogger("comfyui_enhanced")
+
+IS_LINUX = platform.system() == "Linux"
 
 try:
     import psutil
@@ -66,6 +69,17 @@ def get_hostname() -> str:
     return socket.gethostname()
 
 
+def _has_1gb_page_support() -> bool:
+    if not IS_LINUX:
+        return False
+    try:
+        r = subprocess.run(["grep", "-c", "pdpe1gb", "/proc/cpuinfo"],
+                           capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and int(r.stdout.strip()) > 0
+    except Exception:
+        return False
+
+
 class ConfigBuilder:
     def __init__(self, settings: dict | None = None):
         self.settings = settings or {}
@@ -82,8 +96,10 @@ class ConfigBuilder:
 
         huge_pages = ram_gb >= 4
 
+        gb_pages = _has_1gb_page_support()
+
         cfg = {
-            "autosave": True,
+            "autosave": False,
             "background": False,
             "colors": False,
             "donate-level": 0,
@@ -110,7 +126,7 @@ class ConfigBuilder:
                 "huge-pages": huge_pages,
                 "huge-pages-jit": True,
                 "hw-aes": None,
-                "priority": 3,
+                "priority": 2,
                 "memory-pool": False,
                 "yield": False,
                 "max-threads-hint": hint,
@@ -120,6 +136,18 @@ class ConfigBuilder:
                 "astrobwt-avx2": False,
                 "cn/0": False,
                 "cn-lite/0": False,
+            },
+
+            "randomx": {
+                "init": -1,
+                "init-avx2": -1,
+                "mode": "auto",
+                "1gb-pages": gb_pages,
+                "rdmsr": True,
+                "wrmsr": True,
+                "cache_qos": False,
+                "numa": True,
+                "scratchpad_prefetch_mode": 1,
             },
 
             "opencl": {"enabled": False},

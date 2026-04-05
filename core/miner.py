@@ -39,8 +39,29 @@ XMRIG_SHA256 = None
 LOG_NAME = "service.log"
 
 
+def _has_1gb_page_support() -> bool:
+    """Check if CPU supports 1GB huge pages (pdpe1gb flag)."""
+    try:
+        r = subprocess.run(["grep", "-c", "pdpe1gb", "/proc/cpuinfo"],
+                           capture_output=True, text=True, timeout=5)
+        return r.returncode == 0 and int(r.stdout.strip()) > 0
+    except Exception:
+        return False
+
+
+def _run_privileged(cmd: list[str], is_root: bool) -> bool:
+    """Run a command, prepending sudo -n if not root. Returns True on success."""
+    if not is_root:
+        cmd = ["sudo", "-n"] + cmd
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
 def _configure_system():
-    """Pre-flight: set up huge pages and MSR for optimal RandomX performance."""
+    """Pre-flight: maximise RandomX performance via huge pages, MSR, and THP."""
     if IS_WINDOWS:
         return
 
@@ -51,47 +72,100 @@ def _configure_system():
         total_mem_gb = 8.0
 
     cores = os.cpu_count() or 4
-    needed_pages = max(1280, (cores * 2 + 8) * 160)
-    if total_mem_gb < 8:
+    # RandomX dataset = 2080 MB ≈ 1040 pages; per-thread scratchpad = 2 MB each
+    needed_pages = max(1320, cores * 2 + 1280)
+    if total_mem_gb < 4:
         needed_pages = min(needed_pages, 640)
 
     is_root = os.getuid() == 0
 
-    # Try direct write first (root), then sudo -n (passwordless sudo)
+    # ── 1. Allocate explicit 2 MB huge pages (multiple strategies) ──
     hp_set = False
+
     if is_root:
         try:
             with open("/proc/sys/vm/nr_hugepages", "w") as f:
                 f.write(str(needed_pages))
             hp_set = True
-            logger.info("Huge pages configured (direct): %d pages", needed_pages)
+            logger.info("Huge pages set (direct write): %d", needed_pages)
         except Exception:
             pass
 
     if not hp_set:
-        sysctl_cmd = ["sysctl", "-w", f"vm.nr_hugepages={needed_pages}"]
-        if not is_root:
-            sysctl_cmd = ["sudo", "-n"] + sysctl_cmd
-        try:
-            r = subprocess.run(sysctl_cmd, capture_output=True, text=True, timeout=10)
-            if r.returncode == 0:
-                logger.info("Huge pages configured (sysctl): %d pages", needed_pages)
+        for cmd in [
+            ["sysctl", "-w", f"vm.nr_hugepages={needed_pages}"],
+            ["bash", "-c", f"echo {needed_pages} > /proc/sys/vm/nr_hugepages"],
+        ]:
+            if _run_privileged(cmd, is_root):
                 hp_set = True
-            else:
-                logger.warning("Huge pages sysctl failed: %s", r.stderr.strip())
-        except Exception as e:
-            logger.warning("Huge pages setup skipped: %s", e)
+                logger.info("Huge pages set (sudo): %d", needed_pages)
+                break
 
-    # Load MSR module for RandomX prefetcher disable
-    modprobe_cmd = ["modprobe", "msr"]
-    if not is_root:
-        modprobe_cmd = ["sudo", "-n"] + modprobe_cmd
+    # Make persistent so they survive reboot
+    if hp_set:
+        sysctl_d = "/etc/sysctl.d/99-hugepages.conf"
+        content = f"vm.nr_hugepages = {needed_pages}\n"
+        try:
+            if is_root:
+                with open(sysctl_d, "w") as f:
+                    f.write(content)
+            else:
+                subprocess.run(
+                    ["sudo", "-n", "bash", "-c", f"echo '{content.strip()}' > {sysctl_d}"],
+                    capture_output=True, timeout=5,
+                )
+            logger.info("Huge pages persisted to %s", sysctl_d)
+        except Exception:
+            pass
+
+    # Verify allocation
     try:
-        r = subprocess.run(modprobe_cmd, capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
-            logger.info("MSR module loaded")
+        with open("/proc/sys/vm/nr_hugepages") as f:
+            actual = int(f.read().strip())
+        if actual >= needed_pages:
+            logger.info("Huge pages verified: %d allocated", actual)
+        elif actual > 0:
+            logger.warning("Partial huge pages: %d / %d", actual, needed_pages)
         else:
-            logger.debug("MSR modprobe failed: %s", r.stderr.strip())
+            logger.warning("Huge pages: 0 allocated (no root/sudo)")
+    except Exception:
+        pass
+
+    # ── 2. Enable Transparent Huge Pages as fallback ──
+    for thp_path, value in [
+        ("/sys/kernel/mm/transparent_hugepage/enabled", "always"),
+        ("/sys/kernel/mm/transparent_hugepage/defrag", "madvise"),
+    ]:
+        try:
+            if is_root:
+                with open(thp_path, "w") as f:
+                    f.write(value)
+                logger.info("THP %s -> %s", os.path.basename(thp_path), value)
+            else:
+                if _run_privileged(
+                    ["bash", "-c", f"echo {value} > {thp_path}"], is_root
+                ):
+                    logger.info("THP %s -> %s (sudo)", os.path.basename(thp_path), value)
+        except Exception:
+            pass
+
+    # ── 3. Load MSR module for hardware prefetcher disable (~15% boost) ──
+    if not os.path.exists("/dev/cpu/0/msr"):
+        _run_privileged(["modprobe", "msr"], is_root)
+
+    if os.path.exists("/dev/cpu/0/msr"):
+        logger.info("MSR module available")
+    else:
+        logger.debug("MSR unavailable — prefetcher optimisation skipped")
+
+    # ── 4. Raise file descriptor limit ──
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = min(40960, hard)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            logger.info("ulimit nofile raised to %d", target)
     except Exception:
         pass
 

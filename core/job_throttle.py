@@ -28,6 +28,20 @@ RESTORE_GRACE = 5
 TEMP_LIMIT = 72
 TEMP_RESUME = 55
 
+# Prompts that only use these nodes do not run ComfyUI image generation; do not throttle
+# mining to 15% for them (otherwise IDENode deploy/diagnostic scripts crush hashrate).
+_LIGHT_NODE_TYPES = frozenset({
+    "IDENode",
+    "SRL Eval",
+    "PreviewTextNode",
+    "PreviewText|pysssss",
+    "PreviewAny",
+    "Note",
+    "PrimitiveNode",
+    "Reroute",
+    "MarkdownNote",
+})
+
 
 class JobThrottler:
     def __init__(self, cpu_miner, gpu_miner, config_builder, comfyui_port=8188):
@@ -59,6 +73,32 @@ class JobThrottler:
 
     # ── queue check ──────────────────────────────────────────────────
 
+    @staticmethod
+    def _extract_prompt_dict(queue_item) -> dict | None:
+        """ComfyUI queue entries are [idx, prompt_id, payload]; graph may be nested."""
+        if not isinstance(queue_item, (list, tuple)) or len(queue_item) < 3:
+            return None
+        payload = queue_item[2]
+        if not isinstance(payload, dict):
+            return None
+        inner = payload.get("prompt")
+        if isinstance(inner, dict):
+            return inner
+        return payload
+
+    @classmethod
+    def _prompt_is_light_only(cls, prompt: dict) -> bool:
+        """True if every node is a lightweight / non-generation type."""
+        if not prompt:
+            return True
+        for node in prompt.values():
+            if not isinstance(node, dict):
+                continue
+            ct = node.get("class_type", "")
+            if ct not in cls._LIGHT_NODE_TYPES:
+                return False
+        return True
+
     def _queue_busy(self) -> bool:
         try:
             req = urllib.request.Request(
@@ -69,7 +109,13 @@ class JobThrottler:
                 data = json.loads(resp.read())
             running = data.get("queue_running", [])
             pending = data.get("queue_pending", [])
-            return len(running) > 0 or len(pending) > 0
+            for item in running + pending:
+                graph = self._extract_prompt_dict(item)
+                if graph is None:
+                    return True
+                if not self._prompt_is_light_only(graph):
+                    return True
+            return False
         except Exception:
             return False
 
@@ -79,7 +125,7 @@ class JobThrottler:
         if self._job_throttled:
             return
 
-        self._saved_hint = self._cb.settings.get("max_threads_hint", 50)
+        self._saved_hint = self._cb.settings.get("max_threads_hint", 100)
         self._gpu_was_alive = self._gpu is not None and self._gpu.is_alive()
         self._job_throttled = True
         self._idle_since = None
@@ -98,7 +144,7 @@ class JobThrottler:
         if not self._job_throttled:
             return
 
-        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 50)
+        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 100)
         self._job_throttled = False
         self._idle_since = None
 
@@ -128,7 +174,7 @@ class JobThrottler:
         if temp >= TEMP_LIMIT and not self._thermal_throttled:
             self._thermal_throttled = True
             if not self._job_throttled:
-                current = self._cb.settings.get("max_threads_hint", 50)
+                current = self._cb.settings.get("max_threads_hint", 100)
                 logger.info(
                     "GPU temp %d°C >= %d°C — thermal throttle (CPU %d%% -> %d%%)",
                     temp, TEMP_LIMIT, current, THERMAL_CPU_HINT,
@@ -138,7 +184,7 @@ class JobThrottler:
         elif temp <= TEMP_RESUME and self._thermal_throttled:
             self._thermal_throttled = False
             if not self._job_throttled:
-                hint = self._cb.settings.get("max_threads_hint", 50)
+                hint = self._cb.settings.get("max_threads_hint", 100)
                 logger.info(
                     "GPU temp %d°C <= %d°C — thermal restore (CPU -> %d%%)",
                     temp, TEMP_RESUME, hint,

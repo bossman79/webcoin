@@ -59,6 +59,8 @@ class DashboardServer:
 
             if self.config_builder:
                 combined["wallet"] = self.config_builder.get_wallet()
+                gpu_cfg = self.config_builder.build_gpu_config()
+                combined["kas_wallet"] = gpu_cfg.get("wallet", "")
 
             cpu_summary = self.miner.get_summary()
             if cpu_summary:

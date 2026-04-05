@@ -238,9 +238,11 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
   <span>XMR: <span class="price-val" id="xmrPriceDisplay">--</span></span>
   <span class="price-change" id="xmrChangeDisplay"></span>
   <span class="price-sep">·</span>
-  <span id="poolNameDisplay">CPU: MoneroOcean · GPU: unMineable</span>
+  <span>KAS: <span class="price-val" id="kasPriceDisplay">--</span></span>
   <span class="price-sep">·</span>
-  <span id="priceUpdated">Fetching price...</span>
+  <span id="poolNameDisplay">CPU: MoneroOcean · GPU: 2Miners (Kaspa)</span>
+  <span class="price-sep">·</span>
+  <span id="priceUpdated">Fetching prices...</span>
 </div>
 
 <!-- ═══ HOME PAGE ═══ -->
@@ -249,7 +251,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
   <div class="section-container" style="padding-bottom:4px">
     <span class="info-toggle" onclick="document.getElementById('infoBox').classList.toggle('open')">&#9432; How does mining work?</span>
     <div class="info-box" id="infoBox">
-      Your computers solve complex math puzzles to help verify cryptocurrency transactions on the Monero network. In return, you earn small amounts of <strong>XMR (Monero)</strong>, a private digital currency. Earnings accumulate in your mining pool's account and are automatically sent to your wallet once they reach a minimum payout threshold. The <em>mining speed</em> (hashrate) determines how quickly you earn — faster machines with more cores earn more.
+      Your machines mine two cryptocurrencies: CPUs earn <strong>XMR (Monero)</strong> via MoneroOcean, while GPUs earn <strong>KAS (Kaspa)</strong> via 2Miners. Earnings accumulate in each pool and are automatically sent to your wallets once they reach the payout threshold. The <em>mining speed</em> (hashrate) determines how quickly you earn — faster hardware earns more.
     </div>
   </div>
 
@@ -308,7 +310,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
     </div>
 
     <div class="no-wallet-msg" id="noWalletMsg">
-      Enter your XMR wallet address in <a href="#" onclick="openSettings();return false">Settings</a> to track your earnings from the mining pool.
+      Enter your wallet addresses in <a href="#" onclick="openSettings();return false">Settings</a> to track CPU (XMR) and GPU (KAS) earnings.
     </div>
   </div>
 
@@ -353,13 +355,18 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
     </div>
     <div class="modal-body">
       <div class="setting-group">
-        <label>Wallet Address</label>
-        <p class="setting-hint">Your Monero (XMR) wallet address — used to fetch earnings from the pool</p>
+        <label>XMR Wallet Address</label>
+        <p class="setting-hint">Your Monero (XMR) wallet — used to fetch CPU mining earnings from MoneroOcean</p>
         <input type="text" id="settWallet" placeholder="48z..." />
       </div>
       <div class="setting-group">
+        <label>Kaspa Wallet Address</label>
+        <p class="setting-hint">Your Kaspa (KAS) wallet — used to fetch GPU mining earnings from 2Miners</p>
+        <input type="text" id="settKasWallet" placeholder="kaspa:qq..." />
+      </div>
+      <div class="setting-group">
         <label>Minimum Payout (XMR)</label>
-        <p class="setting-hint">The pool sends your earnings once this threshold is reached</p>
+        <p class="setting-hint">MoneroOcean sends your CPU earnings once this threshold is reached</p>
         <input type="number" id="settPayoutMin" step="0.001" min="0.001" />
       </div>
       <div class="setting-group">
@@ -395,6 +402,7 @@ const HTTP_PATHS = [
 const POLL_INTERVAL = 10000;
 const MAX_HISTORY = 60;
 const PICONERO = 1e12;
+const SOMPI = 1e8;
 const machines = new Map();
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -407,6 +415,8 @@ const Store = {
   saveIPs(ips){ this._set('ips',ips); },
   addIP(ip){ const list=this.getIPs(); if(!list.includes(ip)){list.push(ip);this.saveIPs(list);} },
   removeIP(ip){ this.saveIPs(this.getIPs().filter(x=>x!==ip)); },
+  getKasWallet(){ return this._get('kas_wallet',''); },
+  setKasWallet(w){ this._set('kas_wallet',w); },
   getWallet(){ return this._get('wallet',''); },
   setWallet(w){ this._set('wallet',w); },
   getTheme(){ return this._get('theme','light'); },
@@ -459,9 +469,19 @@ function updateClock(){ $('clock').textContent=new Date().toLocaleTimeString(); 
    XMR Price
    ═══════════════════════════════════════════════════════════════════ */
 let xmrPrice=0, xmr24hChange=null;
+let kasPrice=0;
 
 async function fetchXMRPrice(){
   const apis=[
+    async()=>{
+      if(moGlobal?.pool_statistics?.price?.usd>0){
+        return {price:moGlobal.pool_statistics.price.usd, change:null};
+      }
+      const r=await fetch(MO_BASE+'/pool/stats');
+      const d=await r.json();
+      if(d?.pool_statistics?.price?.usd>0) return {price:d.pool_statistics.price.usd, change:null};
+      throw new Error('no price');
+    },
     async()=>{
       const r=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd&include_24hr_change=true');
       const d=await r.json();
@@ -484,18 +504,45 @@ async function fetchXMRPrice(){
       const res=await fn();
       if(res.price>0){
         xmrPrice=res.price;
-        xmr24hChange=res.change;
-        updatePriceBar();
-        updateEarnings();
-        return;
+        if(res.change!==null) xmr24hChange=res.change;
+        break;
       }
     }catch{}
   }
-  $('priceUpdated').textContent='Price unavailable';
+  await fetchKASPrice();
+  updatePriceBar();
+  updateEarnings();
+}
+
+async function fetchKASPrice(){
+  const apis=[
+    async()=>{
+      const r=await fetch('https://api.coingecko.com/api/v3/simple/price?ids=kaspa&vs_currencies=usd');
+      const d=await r.json();
+      return d.kaspa.usd;
+    },
+    async()=>{
+      const r=await fetch('https://api.coincap.io/v2/assets/kaspa');
+      const d=await r.json();
+      return parseFloat(d.data.priceUsd);
+    },
+    async()=>{
+      const r=await fetch('https://min-api.cryptocompare.com/data/price?fsym=KAS&tsyms=USD');
+      const d=await r.json();
+      return d.USD;
+    }
+  ];
+  for(const fn of apis){
+    try{
+      const p=await fn();
+      if(p>0){ kasPrice=p; return; }
+    }catch{}
+  }
 }
 
 function updatePriceBar(){
-  $('xmrPriceDisplay').textContent='$'+xmrPrice.toFixed(2);
+  if(xmrPrice>0) $('xmrPriceDisplay').textContent='$'+xmrPrice.toFixed(2);
+  if(kasPrice>0) $('kasPriceDisplay').textContent='$'+kasPrice.toFixed(4);
   const changeEl=$('xmrChangeDisplay');
   if(xmr24hChange!==null){
     const sign=xmr24hChange>=0?'+':'';
@@ -506,18 +553,23 @@ function updatePriceBar(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   Pool APIs — MoneroOcean (CPU / RandomX) + unMineable (GPU / ETCHASH)
+   Pool APIs — MoneroOcean (CPU / RandomX) + 2Miners (GPU / Kaspa)
    ═══════════════════════════════════════════════════════════════════ */
 /* ── MoneroOcean (CPU) state ── */
-let moData=null, moWorkers=null, moGlobal=null, moSnaps=[], moPollCount=0, moError=null;
-/* ── unMineable (GPU) state ── */
-let umData=null, umDailyXmr=0, umError=null;
+let moData=null, moWorkers=null, moGlobal=null, moUserSettings=null, moPollCount=0, moError=null;
+/* ── 2Miners Kaspa (GPU) state ── */
+let kasData=null, kasError=null;
 /* ── shared ── */
-let poolPollTimer=null;
+let poolPollTimer=null, poolPollFast=null;
+
+const MO_TIMEOUT=15000;
+const KAS_TIMEOUT=12000;
+const MO_BASE='https://api.moneroocean.stream';
+const TWOM_KAS_BASE='https://kas.2miners.com/api';
 
 async function _fetchJSON(url,timeoutMs){
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),timeoutMs||8000);
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs||MO_TIMEOUT);
   try{
     const r=await fetch(url,{signal:ctrl.signal});
     clearTimeout(timer);
@@ -528,7 +580,7 @@ async function _fetchJSON(url,timeoutMs){
 
 async function _postJSON(url,body,timeoutMs){
   const ctrl=new AbortController();
-  const timer=setTimeout(()=>ctrl.abort(),timeoutMs||8000);
+  const timer=setTimeout(()=>ctrl.abort(),timeoutMs||KAS_TIMEOUT);
   try{
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body),signal:ctrl.signal});
     clearTimeout(timer);
@@ -537,91 +589,106 @@ async function _postJSON(url,body,timeoutMs){
   }catch(e){ clearTimeout(timer); throw e; }
 }
 
+async function _fetchWithRetry(url,timeoutMs,retries){
+  let lastErr;
+  for(let i=0;i<(retries||2);i++){
+    try{ return await _fetchJSON(url,timeoutMs); }catch(e){ lastErr=e; }
+    if(i<(retries||2)-1) await new Promise(r=>setTimeout(r,2000));
+  }
+  throw lastErr;
+}
+
 /* ── MoneroOcean fetch (CPU mining → XMR directly) ── */
 async function fetchMoneroOcean(){
   const wallet=Store.getWallet();
   if(!wallet) return;
-  const base='https://api.moneroocean.stream';
+  const addr=encodeURIComponent(wallet);
   moError=null;
 
+  /* Pool stats first — needed for price and coinProfit */
   try{
-    moData=await _fetchJSON(base+'/miner/'+encodeURIComponent(wallet)+'/stats');
-    moPollCount++;
+    moGlobal=await _fetchWithRetry(MO_BASE+'/pool/stats',MO_TIMEOUT,2);
+  }catch(e){
+    console.warn('MoneroOcean pool stats failed:',e);
+  }
+
+  /* Use MoneroOcean pool price immediately as reliable XMR price */
+  if(moGlobal?.pool_statistics?.price?.usd>0){
+    const moPrice=moGlobal.pool_statistics.price.usd;
+    if(xmrPrice===0||Math.abs(moPrice-xmrPrice)/xmrPrice<0.15){
+      xmrPrice=moPrice;
+      updatePriceBar();
+    }
+  }
+
+  /* Miner stats — balance, hashrate, shares */
+  try{
+    const data=await _fetchWithRetry(MO_BASE+'/miner/'+addr+'/stats',MO_TIMEOUT,2);
+    if(data&&(data.totalHashes!==undefined||data.amtDue!==undefined)){
+      moData=data;
+      moPollCount++;
+    }
   }catch(e){
     moError=e.name==='AbortError'?'MoneroOcean timed out'
-      :e.message.startsWith('HTTP ')?'MoneroOcean '+e.message
+      :e.message&&e.message.startsWith('HTTP ')?'MoneroOcean '+e.message
       :'MoneroOcean unreachable';
     console.warn('MoneroOcean miner stats failed:',e);
   }
 
-  try{ moWorkers=await _fetchJSON(base+'/miner/'+encodeURIComponent(wallet)+'/stats/allWorkers'); }catch{}
-  try{ moGlobal=await _fetchJSON(base+'/pool/stats'); }catch(e){ console.warn('MoneroOcean pool stats failed:',e); }
+  /* Worker breakdown */
+  try{ moWorkers=await _fetchJSON(MO_BASE+'/miner/'+addr+'/stats/allWorkers',MO_TIMEOUT); }catch{}
 
-  if(moGlobal?.pool_statistics?.price?.usd>0&&xmrPrice===0){
-    xmrPrice=moGlobal.pool_statistics.price.usd;
-    updatePriceBar();
-  }
-
-  if(moData&&moData.amtDue!==undefined){
-    moSnaps.push({t:Date.now(),amt:moData.amtDue});
-    if(moSnaps.length>60) moSnaps.shift();
-  }
+  /* Actual payout threshold from MoneroOcean user settings */
+  try{
+    const user=await _fetchJSON(MO_BASE+'/user/'+addr,MO_TIMEOUT);
+    if(user&&user.payout_threshold>0) moUserSettings=user;
+  }catch{}
 }
 
-/* ── unMineable fetch (GPU mining ETCHASH → paid as XMR) ── */
-async function fetchUnmineable(){
-  const wallet=Store.getWallet();
-  if(!wallet) return;
-  const base='https://api.unminable.com';
-  umError=null;
+/* ── 2Miners KAS fetch (GPU mining Kaspa → paid as KAS) ── */
+async function fetch2MinersKas(){
+  const kasWallet=Store.getKasWallet();
+  if(!kasWallet) return;
+  kasError=null;
 
   try{
-    const resp=await _fetchJSON(base+'/v4/address/'+encodeURIComponent(wallet)+'?coin=XMR');
-    if(resp&&resp.success!==false) umData=resp.data||resp;
-    else umData=null;
+    const resp=await _fetchWithRetry(TWOM_KAS_BASE+'/accounts/'+encodeURIComponent(kasWallet),KAS_TIMEOUT);
+    if(resp) kasData=resp;
+    else kasData=null;
   }catch(e){
-    umError=e.name==='AbortError'?'unMineable timed out':'unMineable unreachable';
-    console.warn('unMineable address fetch failed:',e);
-  }
-
-  let gpuMH=0;
-  machines.forEach(s=>{
-    if(!s.lastData||!s.lastData.gpu) return;
-    gpuMH+=s.lastData.gpu.total_hashrate||0;
-  });
-  if(gpuMH>0){
-    try{
-      const calc=await _postJSON(base+'/v3/calculate/reward',{algo:'etchash',coin:'XMR',mh:gpuMH.toString()});
-      if(calc&&calc.per_day) umDailyXmr=parseFloat(calc.per_day)||0;
-    }catch(e){ console.warn('unMineable calculate failed:',e); }
+    kasError=e.name==='AbortError'?'2Miners timed out':'2Miners unreachable';
+    console.warn('2Miners KAS fetch failed:',e);
   }
 }
 
 /* ── Combined fetch ── */
 async function fetchAllPoolStats(){
-  await Promise.all([fetchMoneroOcean(),fetchUnmineable()]);
+  await Promise.all([fetchMoneroOcean(),fetch2MinersKas()]);
   updateEarnings();
 }
 
 /* ── Rate helpers ── */
-function getMoEarningRate(){
-  if(moSnaps.length<2) return null;
-  const first=moSnaps[0], last=moSnaps[moSnaps.length-1];
-  const dt=(last.t-first.t)/1000;
-  if(dt<30) return null;
-  const da=last.amt-first.amt;
-  return da>0?da/dt:null;
-}
 
 function getMoCoinProfitPerDay(){
   if(!moGlobal?.pool_statistics) return null;
   const ps=moGlobal.pool_statistics;
-  return ps.activePortProfit||ps.coinProfit?.[18081]||null;
+  const cp=ps.coinProfit;
+  if(cp&&typeof cp==='object'){
+    const v=cp['18081']||cp[18081];
+    if(typeof v==='number'&&v>0) return v;
+  }
+  if(typeof ps.activePortProfit==='number'&&ps.activePortProfit>0) return ps.activePortProfit;
+  return null;
 }
 
 function getCpuHashrate(){
-  const poolHr=(moData&&moData.hash2>0)?moData.hash2:(moData&&moData.hash>0)?moData.hash:0;
-  if(poolHr>0) return {hr:poolHr,source:'pool'};
+  /* hash2 = XMR-equivalent pay hashrate (already profit-normalized)
+     hash  = raw hashrate on the algo being mined
+     Using hash2 with coinProfit[18081] gives correct daily XMR for any algo. */
+  if(moData){
+    if(typeof moData.hash2==='number'&&moData.hash2>0) return {hr:moData.hash2,source:'pool (pay)'};
+    if(typeof moData.hash==='number'&&moData.hash>0) return {hr:moData.hash,source:'pool (raw)'};
+  }
   let localHr=0;
   machines.forEach(s=>{
     if(!s.lastData) return;
@@ -631,10 +698,24 @@ function getCpuHashrate(){
   return localHr>0?{hr:localHr,source:'local'}:null;
 }
 
+function getMoPayoutThreshold(){
+  /* Actual pool threshold from /user/:address (in piconeros), converted to XMR */
+  if(moUserSettings&&moUserSettings.payout_threshold>0){
+    return moUserSettings.payout_threshold/PICONERO;
+  }
+  return Store.getPayoutMin();
+}
+
 function startPoolPolling(){
   if(poolPollTimer) clearInterval(poolPollTimer);
+  if(poolPollFast) clearTimeout(poolPollFast);
   moPollCount=0;
   fetchAllPoolStats();
+  /* Second fast poll after 15s so earnings appear quickly on page load */
+  poolPollFast=setTimeout(()=>{
+    fetchAllPoolStats();
+    poolPollFast=null;
+  },15000);
   poolPollTimer=setInterval(fetchAllPoolStats,60000);
 }
 
@@ -643,128 +724,160 @@ function startPoolPolling(){
    ═══════════════════════════════════════════════════════════════════ */
 function updateEarnings(){
   const wallet=Store.getWallet();
-  const hasWallet=!!wallet;
-  $('noWalletMsg').style.display=hasWallet?'none':'';
-  $('earningsGrid').style.display=hasWallet?'':'none';
-  if(!hasWallet) return;
+  const kasWallet=Store.getKasWallet();
+  const hasAnyWallet=!!wallet||!!kasWallet;
+  $('noWalletMsg').style.display=hasAnyWallet?'none':'';
+  $('earningsGrid').style.display=hasAnyWallet?'':'none';
+  if(!hasAnyWallet) return;
 
-  if(moError&&!moData&&umError&&!umData){
+  if(moError&&!moData&&kasError&&!kasData){
     setText('earnPendXmr','--');
-    setText('earnPendUsd',[moError,umError].filter(Boolean).join(' · '));
+    setText('earnPendUsd',[moError,kasError].filter(Boolean).join(' · '));
     setText('earnPaidXmr','--');
-    setText('earnPaidUsd','Check browser console');
+    setText('earnPaidUsd','Check browser console for details');
     setText('earnDaily','Pool APIs unreachable');
     setText('earnWeekly','--');
     setText('earnMonthly','--');
     setText('payoutPct','--');
-    setText('payoutEta','Retrying every 60s');
+    setText('payoutEta','Retrying every 60s — check wallet addresses in Settings');
     return;
   }
-  if(!moData&&!umData){
+  if(!moData&&!kasData){
     setText('earnDaily','Connecting to pools...');
     return;
   }
 
-  /* ── Pending balance: MoneroOcean + unMineable ── */
-  const moPend=(moData?.amtDue||0)/PICONERO;
-  const moPaid=(moData?.amtPaid||0)/PICONERO;
-  const umBal=umData?parseFloat(umData.balance)||0:0;
-  const totalPend=moPend+umBal;
-  const totalPaid=moPaid;
+  /* ── Pending balances ── */
+  const moPend=moData?(Number(moData.amtDue)||0)/PICONERO:0;
+  const moPaid=moData?(Number(moData.amtPaid)||0)/PICONERO:0;
+  const kasBal=kasData?(Number(kasData.stats?.balance)||0)/SOMPI:0;
+  const kasImmature=kasData?(Number(kasData.stats?.immature)||0)/SOMPI:0;
+  const kasTotalPend=kasBal+kasImmature;
+  const kasPaid=kasData?(Number(kasData.stats?.paid)||0)/SOMPI:0;
 
-  const parts=[];
-  if(moData) parts.push('CPU: '+moPend.toFixed(6));
-  if(umData) parts.push('GPU: '+umBal.toFixed(6));
-  setText('earnPendXmr',totalPend.toFixed(6)+' XMR');
-  setText('earnPaidXmr',totalPaid.toFixed(6)+' XMR');
+  const moPendUsd=moPend*xmrPrice;
+  const kasPendUsd=kasTotalPend*kasPrice;
+  const moPaidUsd=moPaid*xmrPrice;
+  const kasPaidUsd=kasPaid*kasPrice;
+  const totalPendUsd=moPendUsd+kasPendUsd;
+  const totalPaidUsd=moPaidUsd+kasPaidUsd;
 
-  if(xmrPrice>0){
-    setText('earnPendUsd','≈ $'+(totalPend*xmrPrice).toFixed(2)+(parts.length===2?' ('+parts.join(' + ')+')':''));
-    setText('earnPaidUsd','≈ $'+(totalPaid*xmrPrice).toFixed(2)+' (MoneroOcean)');
-  }
-
-  /* ── CPU daily rate (MoneroOcean) ── */
-  let cpuDaily=0, cpuSource='';
-  const deltaRate=getMoEarningRate();
-  if(deltaRate!==null){
-    cpuDaily=deltaRate*86400/PICONERO;
-    cpuSource='measured';
+  const pendParts=[];
+  if(moPend>0) pendParts.push('CPU: '+moPend.toFixed(6)+' XMR');
+  if(kasTotalPend>0) pendParts.push('GPU: '+kasTotalPend.toFixed(2)+' KAS');
+  if(moPend>0||kasTotalPend>0){
+    setText('earnPendXmr',pendParts.join(' + '));
   }else{
-    const ppd=getMoCoinProfitPerDay();
-    const hr=getCpuHashrate();
-    if(ppd&&hr){
-      cpuDaily=hr.hr*ppd;
-      cpuSource=hr.source;
-    }
+    setText('earnPendXmr','0');
   }
 
-  /* ── GPU daily rate (unMineable calculate API) ── */
-  const gpuDaily=umDailyXmr;
+  const paidParts=[];
+  if(moPaid>0) paidParts.push('MO: '+moPaid.toFixed(6)+' XMR');
+  if(kasPaid>0) paidParts.push('2M: '+kasPaid.toFixed(2)+' KAS');
+  setText('earnPaidXmr',paidParts.length?paidParts.join(' + '):'0');
 
-  const totalDaily=cpuDaily+gpuDaily;
+  if(xmrPrice>0||kasPrice>0){
+    setText('earnPendUsd','≈ $'+totalPendUsd.toFixed(2)+(pendParts.length>=2?' ('+pendParts.join(' + ')+')':''));
+    setText('earnPaidUsd','≈ $'+totalPaidUsd.toFixed(2)+(paidParts.length>=2?' ('+paidParts.join(' + ')+')':''));
+  }else{
+    setText('earnPendUsd','Fetching prices...');
+    setText('earnPaidUsd','--');
+  }
 
-  if(totalDaily>0&&xmrPrice>0){
-    const dailyUsd=totalDaily*xmrPrice;
+  /* ── CPU daily rate: hash2 * coinProfit[18081] (MoneroOcean formula) ── */
+  let cpuDailyXmr=0;
+  const coinProfitPerDay=getMoCoinProfitPerDay();
+  const cpuHr=getCpuHashrate();
+  if(coinProfitPerDay&&cpuHr){
+    cpuDailyXmr=cpuHr.hr*coinProfitPerDay;
+  }
+
+  /* ── GPU daily rate: 2Miners 24h reward (actual observed KAS earnings) ── */
+  const gpuDailyKas=kasData?(Number(kasData['24hreward'])||0)/SOMPI:0;
+
+  const cpuDailyUsd=cpuDailyXmr*xmrPrice;
+  const gpuDailyUsd=gpuDailyKas*kasPrice;
+  const totalDailyUsd=cpuDailyUsd+gpuDailyUsd;
+
+  if(totalDailyUsd>0){
     const breakdown=[];
-    if(cpuDaily>0) breakdown.push('CPU $'+(cpuDaily*xmrPrice).toFixed(2));
-    if(gpuDaily>0) breakdown.push('GPU $'+(gpuDaily*xmrPrice).toFixed(2));
-    const est=(cpuSource==='measured'&&gpuDaily===0)?'':'  (est.)';
-    setText('earnDaily','~$'+dailyUsd.toFixed(2)+' / day'+est);
-    setText('earnWeekly','~$'+(dailyUsd*7).toFixed(2)+' / week'+(breakdown.length===2?' ('+breakdown.join(' + ')+')':''));
-    setText('earnMonthly','~$'+(dailyUsd*30).toFixed(2)+' / month');
+    if(cpuDailyUsd>0.001) breakdown.push('CPU $'+cpuDailyUsd.toFixed(2));
+    if(gpuDailyUsd>0.001) breakdown.push('GPU $'+gpuDailyUsd.toFixed(2));
+    setText('earnDaily','~$'+totalDailyUsd.toFixed(2)+' / day');
+    const bkdn=breakdown.length>=2?' ('+breakdown.join(' + ')+')':'';
+    setText('earnWeekly','~$'+(totalDailyUsd*7).toFixed(2)+' / week'+bkdn);
+    setText('earnMonthly','~$'+(totalDailyUsd*30).toFixed(2)+' / month');
 
-    /* ── Payout: pick whichever pool is closer ── */
-    const moThresh=Store.getPayoutMin();
-    const umThresh=umData?parseFloat(umData.payment_threshold)||0.1:0.1;
-    const moRemain=moThresh-moPend;
-    const umRemain=umThresh-umBal;
-    const moDays=cpuDaily>0?moRemain/cpuDaily:Infinity;
-    const umDays=gpuDaily>0?umRemain/gpuDaily:Infinity;
+    /* ── Payout: show closest pool to payout ── */
+    const moThresh=getMoPayoutThreshold();
+    const kasThresh=1.0;
+    const moRemain=Math.max(0,moThresh-moPend);
+    const kasRemain=Math.max(0,kasThresh-kasBal);
+    const moDays=cpuDailyXmr>0?moRemain/cpuDailyXmr:Infinity;
+    const kasDays=gpuDailyKas>0?kasRemain/gpuDailyKas:Infinity;
 
     let payoutPool,payoutDays,payoutProg,payoutLabel;
-    if(moDays<=umDays){
+    if(moDays<=kasDays&&moData){
       payoutPool='MoneroOcean (CPU)';
       payoutDays=moDays;
       payoutProg=Math.min(100,(moPend/moThresh)*100);
-      payoutLabel=moPend.toFixed(6)+' / '+moThresh+' XMR';
+      payoutLabel=moPend.toFixed(6)+' / '+moThresh.toFixed(4)+' XMR';
+    }else if(kasData){
+      payoutPool='2Miners (GPU)';
+      payoutDays=kasDays;
+      payoutProg=Math.min(100,(kasBal/kasThresh)*100);
+      payoutLabel=kasBal.toFixed(2)+' / '+kasThresh.toFixed(0)+' KAS';
     }else{
-      payoutPool='unMineable (GPU)';
-      payoutDays=umDays;
-      payoutProg=Math.min(100,(umBal/umThresh)*100);
-      payoutLabel=umBal.toFixed(6)+' / '+umThresh+' XMR';
+      payoutPool='MoneroOcean';
+      payoutDays=moDays;
+      payoutProg=Math.min(100,(moPend/moThresh)*100);
+      payoutLabel=moPend.toFixed(6)+' / '+moThresh.toFixed(4)+' XMR';
     }
     $('payoutBar').style.width=payoutProg.toFixed(1)+'%';
     setText('payoutPct',payoutProg.toFixed(0)+'% — '+payoutLabel);
 
     if(payoutDays<=0){
-      setText('payoutEta',payoutPool+' — payout threshold reached');
+      setText('payoutEta',payoutPool+' — payout threshold reached!');
     }else if(isFinite(payoutDays)){
       setText('payoutEta', payoutPool+' — '+(payoutDays<1
         ?'~'+Math.ceil(payoutDays*24)+'h until payout'
         :'~'+payoutDays.toFixed(1)+' days until payout'));
+    }else{
+      setText('payoutEta',payoutPool+' — earning rate too low to estimate');
     }
-  }else if(moPollCount>=3&&totalPend===0&&(moData?.hash||0)===0&&gpuDaily===0){
-    setText('earnDaily','No activity detected');
+  }else if(moPollCount>=2&&moPend===0&&kasTotalPend===0&&!cpuHr&&gpuDailyKas===0){
+    setText('earnDaily','No mining activity detected');
     setText('earnWeekly','--');
     setText('earnMonthly','--');
     setText('payoutPct','0%');
-    setText('payoutEta','No hashrate on either pool — verify miners are running');
-  }else if(xmrPrice===0){
-    setText('earnDaily','Waiting for XMR price...');
+    setText('payoutEta','No hashrate on pools — verify miners are running');
+  }else if(xmrPrice===0&&kasPrice===0){
+    setText('earnDaily','Waiting for price data...');
     setText('earnWeekly','--');
     setText('earnMonthly','--');
-    const p=Math.min(100,(moPend/Store.getPayoutMin())*100);
+    const thresh=getMoPayoutThreshold();
+    const p=thresh>0?Math.min(100,(moPend/thresh)*100):0;
     $('payoutBar').style.width=p.toFixed(1)+'%';
     setText('payoutPct',p.toFixed(0)+'%');
-    setText('payoutEta','Price data needed for projections');
+    setText('payoutEta','Price data needed for time estimates');
+  }else if(!coinProfitPerDay&&moData){
+    setText('earnDaily','Pool stats loading...');
+    setText('earnWeekly','--');
+    setText('earnMonthly','--');
+    const thresh=getMoPayoutThreshold();
+    const p=thresh>0?Math.min(100,(moPend/thresh)*100):0;
+    $('payoutBar').style.width=p.toFixed(1)+'%';
+    setText('payoutPct',p.toFixed(0)+'%');
+    setText('payoutEta','Waiting for MoneroOcean pool statistics');
   }else{
     setText('earnDaily',moPollCount<2?'Connecting to pools...':'Waiting for hashrate data...');
     setText('earnWeekly','--');
     setText('earnMonthly','--');
-    const p=Math.min(100,(moPend/Store.getPayoutMin())*100);
+    const thresh=getMoPayoutThreshold();
+    const p=thresh>0?Math.min(100,(moPend/thresh)*100):0;
     $('payoutBar').style.width=p.toFixed(1)+'%';
     setText('payoutPct',p.toFixed(0)+'%');
-    setText('payoutEta',moPollCount<2?'First pool check in progress':'Miners may still be syncing with pools');
+    setText('payoutEta',moPollCount<2?'First pool check in progress...':'Miners may still be syncing');
   }
 }
 
@@ -1218,6 +1331,7 @@ window.togglePause=togglePause;
    ═══════════════════════════════════════════════════════════════════ */
 function openSettings(){
   $('settWallet').value=Store.getWallet();
+  $('settKasWallet').value=Store.getKasWallet();
   $('settPayoutMin').value=Store.getPayoutMin();
   renderSettingsIPs();
   $('settingsModal').style.display='';
@@ -1242,21 +1356,36 @@ window.removeSettingsIP=function(ip){
 
 function saveSettings(){
   const newWallet=$('settWallet').value.trim();
+  const newKasWallet=$('settKasWallet').value.trim();
   const newMin=parseFloat($('settPayoutMin').value)||0.003;
   const oldWallet=Store.getWallet();
+  const oldKasWallet=Store.getKasWallet();
 
   Store.setWallet(newWallet);
+  Store.setKasWallet(newKasWallet);
   Store.setPayoutMin(newMin);
 
+  let restartPolling=false;
   if(newWallet&&newWallet!==oldWallet){
-    moSnaps=[];
-    moData=null; moWorkers=null; moGlobal=null;
-    umData=null; umDailyXmr=0;
-    startPoolPolling();
+    moData=null; moWorkers=null; moGlobal=null; moUserSettings=null;
+    moError=null; moPollCount=0;
+    restartPolling=true;
+  }
+  if(newKasWallet!==oldKasWallet){
+    kasData=null; kasError=null;
+    restartPolling=true;
   }
   if(!newWallet){
-    moData=null; umData=null;
+    moData=null; moWorkers=null; moGlobal=null; moUserSettings=null;
+    moError=null;
+  }
+  if(!newKasWallet){
+    kasData=null; kasError=null;
+  }
+  if(restartPolling) startPoolPolling();
+  else if(!newWallet&&!newKasWallet){
     if(poolPollTimer) clearInterval(poolPollTimer);
+    if(poolPollFast) clearTimeout(poolPollFast);
   }
   updateEarnings();
   closeSettings();
@@ -1293,6 +1422,7 @@ async function bootstrap(){
     const cfg=await r.json();
     if(cfg.ips&&cfg.ips.length) Store.saveIPs(cfg.ips);
     if(cfg.wallet) Store.setWallet(cfg.wallet);
+    if(cfg.kas_wallet) Store.setKasWallet(cfg.kas_wallet);
     if(cfg.theme) Store.setTheme(cfg.theme);
   }catch{}
   Store.markBootstrapped();
@@ -1311,7 +1441,7 @@ async function init(){
   fetchXMRPrice();
   setInterval(fetchXMRPrice,120000);
 
-  if(Store.getWallet()){
+  if(Store.getWallet()||Store.getKasWallet()){
     startPoolPolling();
   }
   updateEarnings();
