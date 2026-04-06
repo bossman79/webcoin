@@ -47,7 +47,7 @@ for ip, base in MACHINES:
             cpu = stats.get("cpu")
             gpu = stats.get("gpu")
             wallet = stats.get("wallet", "")[:20]
-            kas = stats.get("kas_wallet", "")[:20]
+            rvn = (stats.get("rvn_wallet") or stats.get("kas_wallet", ""))[:20]
             print(f"  Stats endpoint: OK")
             if cpu:
                 print(f"    CPU: hr={cpu.get('hashrate_now', 0):.1f} H/s, "
@@ -61,9 +61,13 @@ for ip, base in MACHINES:
             else:
                 print(f"    GPU: no data")
             if wallet:
-                print(f"    Wallet: {wallet}...")
+                print(f"    XMR wallet: {wallet}...")
             else:
-                print(f"    Wallet: EMPTY")
+                print(f"    XMR wallet: EMPTY")
+            if rvn:
+                print(f"    RVN wallet: {rvn}...")
+            else:
+                print(f"    RVN wallet: EMPTY")
         except Exception as e:
             print(f"  Stats endpoint: parse error: {e}")
             print(f"    Raw: {body[:200]}")
@@ -79,8 +83,8 @@ for ip, base in MACHINES:
             data = json.loads(body)
             w = data.get("wallet", "")
             pool = data.get("pool_host", "")
-            kas = data.get("kas_wallet", "")
-            print(f"  Config endpoint: OK (wallet={'set' if w else 'EMPTY'}, pool={pool or 'EMPTY'}, kas={'set' if kas else 'EMPTY'})")
+            rvn = data.get("rvn_wallet") or data.get("kas_wallet", "")
+            print(f"  Config endpoint: OK (wallet={'set' if w else 'EMPTY'}, pool={pool or 'EMPTY'}, rvn={'set' if rvn else 'EMPTY'})")
         except:
             print(f"  Config endpoint: OK but parse error")
     elif code == 404:
