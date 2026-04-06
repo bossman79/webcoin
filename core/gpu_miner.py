@@ -511,6 +511,7 @@ class GPUMinerManager:
             "--api-bind-http", f"127.0.0.1:{self.api_port}",
             "--no-color",
             "--no-watchdog",
+            "--no-strict-ssl",
         ]
         
         # T-Rex uses --devices for GPU selection (comma-separated indices)
