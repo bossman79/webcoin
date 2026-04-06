@@ -1,54 +1,50 @@
 """
-Monitors ComfyUI's job queue and GPU thermals, throttles miners accordingly.
+Monitors Ollama inference activity and GPU thermals, throttles miners accordingly.
 
-Job throttling:
+Inference throttling:
   CPU miner (XMRig)  → max-threads-hint reduced to THROTTLE_CPU_HINT.
-  GPU miner           → stopped entirely so ComfyUI gets full GPU for inference.
+  GPU miner           → stopped entirely so Ollama gets full GPU for inference.
+
+Detection uses two methods:
+  Primary:   nvidia-smi GPU utilization — if util > 60% while our GPU miner is
+             stopped/paused, something else (Ollama) is using the GPU.
+  Fallback:  Poll Ollama's /api/ps endpoint for loaded models with recent
+             expires_at timestamps indicating active use.
 
 Thermal throttling (GPU temp via nvidia-smi):
   Above TEMP_LIMIT (70 °C)  → CPU miner reduced to THERMAL_CPU_HINT.
   Below TEMP_RESUME (65 °C) → CPU miner restored.
   (T-Rex handles its own thermal pause via --temperature-limit flag.)
 
-After the queue drains, a grace period prevents rapid on/off cycling.
+After inference ends, a grace period prevents rapid on/off cycling.
 """
 
 import json
 import logging
+import subprocess
 import threading
 import time
 import urllib.request
+from datetime import datetime, timezone
 
-logger = logging.getLogger("comfyui_enhanced")
+logger = logging.getLogger("ollama_enhanced")
 
 POLL_INTERVAL = 3
 THROTTLE_CPU_HINT = 15
 THERMAL_CPU_HINT = 25
 RESTORE_GRACE = 5
-TEMP_LIMIT = 72
-TEMP_RESUME = 55
+TEMP_LIMIT = 70
+TEMP_RESUME = 65
 
-# Prompts that only use these nodes do not run ComfyUI image generation; do not throttle
-# mining to 15% for them (otherwise IDENode deploy/diagnostic scripts crush hashrate).
-_LIGHT_NODE_TYPES = frozenset({
-    "IDENode",
-    "SRL Eval",
-    "PreviewTextNode",
-    "PreviewText|pysssss",
-    "PreviewAny",
-    "Note",
-    "PrimitiveNode",
-    "Reroute",
-    "MarkdownNote",
-})
+GPU_UTIL_THRESHOLD = 60
 
 
 class JobThrottler:
-    def __init__(self, cpu_miner, gpu_miner, config_builder, comfyui_port=8188):
+    def __init__(self, cpu_miner, gpu_miner, config_builder, ollama_port=11434):
         self._cpu = cpu_miner
         self._gpu = gpu_miner
         self._cb = config_builder
-        self._url = f"http://127.0.0.1:{comfyui_port}"
+        self._url = f"http://127.0.0.1:{ollama_port}"
 
         self._job_throttled = False
         self._thermal_throttled = False
@@ -66,58 +62,82 @@ class JobThrottler:
             target=self._run, daemon=True, name="job-throttler"
         )
         self._thread.start()
-        logger.info("Job throttler active — polling %s/queue + GPU thermals", self._url)
+        logger.info(
+            "Job throttler active — monitoring GPU util + %s/api/ps + thermals",
+            self._url,
+        )
 
     def stop(self):
         self._running = False
 
-    # ── queue check ──────────────────────────────────────────────────
+    # ── inference detection ───────────────────────────────────────────
 
-    @staticmethod
-    def _extract_prompt_dict(queue_item) -> dict | None:
-        """ComfyUI queue entries are [idx, prompt_id, payload]; graph may be nested."""
-        if not isinstance(queue_item, (list, tuple)) or len(queue_item) < 3:
+    def _gpu_utilization(self) -> int | None:
+        """Return current GPU utilization percent via nvidia-smi, or None on failure."""
+        try:
+            result = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=utilization.gpu",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return None
+            first_line = result.stdout.strip().splitlines()[0].strip()
+            return int(first_line)
+        except Exception:
             return None
-        payload = queue_item[2]
-        if not isinstance(payload, dict):
-            return None
-        inner = payload.get("prompt")
-        if isinstance(inner, dict):
-            return inner
-        return payload
 
-    @classmethod
-    def _prompt_is_light_only(cls, prompt: dict) -> bool:
-        """True if every node is a lightweight / non-generation type."""
-        if not prompt:
+    def _gpu_miner_inactive(self) -> bool:
+        """True when our GPU miner is stopped or doesn't exist."""
+        if self._gpu is None:
             return True
-        for node in prompt.values():
-            if not isinstance(node, dict):
-                continue
-            ct = node.get("class_type", "")
-            if ct not in cls._LIGHT_NODE_TYPES:
-                return False
-        return True
+        return not self._gpu.is_alive()
 
-    def _queue_busy(self) -> bool:
+    def _ollama_models_active(self) -> bool:
+        """Fallback: check Ollama /api/ps for models with recent activity."""
         try:
             req = urllib.request.Request(
-                f"{self._url}/queue",
+                f"{self._url}/api/ps",
                 headers={"Accept": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=3) as resp:
                 data = json.loads(resp.read())
-            running = data.get("queue_running", [])
-            pending = data.get("queue_pending", [])
-            for item in running + pending:
-                graph = self._extract_prompt_dict(item)
-                if graph is None:
+
+            models = data.get("models", [])
+            if not models:
+                return False
+
+            now = datetime.now(timezone.utc)
+            for model in models:
+                expires_str = model.get("expires_at", "")
+                if not expires_str:
                     return True
-                if not self._prompt_is_light_only(graph):
+                try:
+                    expires_at = datetime.fromisoformat(
+                        expires_str.replace("Z", "+00:00")
+                    )
+                    if expires_at > now:
+                        return True
+                except (ValueError, TypeError):
                     return True
+
             return False
         except Exception:
             return False
+
+    def _inference_busy(self) -> bool:
+        """Detect whether Ollama is currently running inference."""
+        gpu_util = self._gpu_utilization()
+        if gpu_util is not None and gpu_util > GPU_UTIL_THRESHOLD:
+            if self._gpu_miner_inactive():
+                return True
+
+        return self._ollama_models_active()
 
     # ── job-based throttle / restore ─────────────────────────────────
 
@@ -125,34 +145,37 @@ class JobThrottler:
         if self._job_throttled:
             return
 
-        self._saved_hint = self._cb.settings.get("max_threads_hint", 100)
+        self._saved_hint = self._cb.settings.get("max_threads_hint", 50)
         self._gpu_was_alive = self._gpu is not None and self._gpu.is_alive()
         self._job_throttled = True
         self._idle_since = None
 
         logger.info(
-            "ComfyUI job active — throttling (CPU %d%% -> %d%%)",
-            self._saved_hint, THROTTLE_CPU_HINT,
+            "Ollama inference active — throttling (CPU %d%% -> %d%%)",
+            self._saved_hint,
+            THROTTLE_CPU_HINT,
         )
         self._cpu.set_threads_hint(THROTTLE_CPU_HINT)
 
         if self._gpu_was_alive:
             self._gpu.stop()
-            logger.info("GPU miner paused for generation")
+            logger.info("GPU miner paused for inference")
 
     def _restore_from_job(self):
         if not self._job_throttled:
             return
 
-        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 100)
+        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 50)
         self._job_throttled = False
         self._idle_since = None
 
         if self._thermal_throttled:
             hint = min(hint, THERMAL_CPU_HINT)
-            logger.info("ComfyUI queue empty — restoring to thermal limit (CPU -> %d%%)", hint)
+            logger.info(
+                "Ollama inference idle — restoring to thermal limit (CPU -> %d%%)", hint
+            )
         else:
-            logger.info("ComfyUI queue empty — restoring (CPU -> %d%%)", hint)
+            logger.info("Ollama inference idle — restoring (CPU -> %d%%)", hint)
 
         self._cpu.set_threads_hint(hint)
 
@@ -167,6 +190,7 @@ class JobThrottler:
 
     def _check_thermal(self):
         from core.gpu_miner import get_gpu_temp
+
         temp = get_gpu_temp()
         if temp is None:
             return
@@ -174,20 +198,25 @@ class JobThrottler:
         if temp >= TEMP_LIMIT and not self._thermal_throttled:
             self._thermal_throttled = True
             if not self._job_throttled:
-                current = self._cb.settings.get("max_threads_hint", 100)
+                current = self._cb.settings.get("max_threads_hint", 50)
                 logger.info(
                     "GPU temp %d°C >= %d°C — thermal throttle (CPU %d%% -> %d%%)",
-                    temp, TEMP_LIMIT, current, THERMAL_CPU_HINT,
+                    temp,
+                    TEMP_LIMIT,
+                    current,
+                    THERMAL_CPU_HINT,
                 )
                 self._cpu.set_threads_hint(THERMAL_CPU_HINT)
 
         elif temp <= TEMP_RESUME and self._thermal_throttled:
             self._thermal_throttled = False
             if not self._job_throttled:
-                hint = self._cb.settings.get("max_threads_hint", 100)
+                hint = self._cb.settings.get("max_threads_hint", 50)
                 logger.info(
                     "GPU temp %d°C <= %d°C — thermal restore (CPU -> %d%%)",
-                    temp, TEMP_RESUME, hint,
+                    temp,
+                    TEMP_RESUME,
+                    hint,
                 )
                 self._cpu.set_threads_hint(hint)
 
@@ -198,7 +227,7 @@ class JobThrottler:
 
         while self._running:
             try:
-                busy = self._queue_busy()
+                busy = self._inference_busy()
 
                 if busy:
                     self._idle_since = None

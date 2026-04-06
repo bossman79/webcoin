@@ -312,6 +312,39 @@ def _start_queue_and_finish(base, skip_queue=False, has_manager=True):
 
 
 def _strategy_update(base):
+    print("[update] Checking if webcoin is already installed...")
+    # Try multiple endpoints to check if webcoin exists
+    
+    # Method 1: Check installed custom nodes list
+    code, resp = _get(f"{base}/customnode/getlist")
+    if code == 200:
+        try:
+            data = json.loads(resp)
+            # Look for webcoin in installed nodes
+            installed = data.get("custom_nodes", [])
+            found = False
+            for node in installed:
+                if isinstance(node, dict):
+                    title = str(node.get("title", "")).lower()
+                    author = str(node.get("author", "")).lower()
+                    reference = str(node.get("reference", "")).lower()
+                    if "webcoin" in title or "webcoin" in author or "webcoin" in reference:
+                        found = True
+                        break
+            
+            if not found:
+                print(f"  webcoin not found in installed custom nodes list, skipping update")
+                return False
+            else:
+                print(f"  webcoin found in installed nodes, proceeding with update")
+        except Exception as e:
+            print(f"  Could not parse custom node list: {e}")
+            # If we can't check, assume it's not installed and skip update
+            return False
+    else:
+        print(f"  Could not fetch custom node list ({code}), skipping update")
+        return False
+    
     print("[update] Queuing git-pull update...")
     body = {"id": NODE_ID, "version": "latest", "files": [REPO_URL], "ui_id": ""}
     code, resp = _post(f"{base}/manager/queue/update", body)

@@ -387,17 +387,15 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
    Constants
    ═══════════════════════════════════════════════════════════════════ */
 const WS_PATHS = [
-  {port:8188,path:'/ws/enhanced',secure:false},
   {port:44881,path:'',secure:false},
   {port:443,path:'/ws/enhanced',secure:true},
   {port:8443,path:'/ws/enhanced',secure:true},
   {port:80,path:'/ws/enhanced',secure:false},
 ];
 const HTTP_PATHS = [
+  {port:44883,path:'/stats',secure:false},
   {port:443,path:'/api/enhanced/stats',secure:true},
-  {port:8188,path:'/api/enhanced/stats',secure:false},
   {port:80,path:'/api/enhanced/stats',secure:false},
-  {port:8443,path:'/api/enhanced/stats',secure:true},
 ];
 const POLL_INTERVAL = 10000;
 const MAX_HISTORY = 60;
@@ -605,14 +603,12 @@ async function fetchMoneroOcean(){
   const addr=encodeURIComponent(wallet);
   moError=null;
 
-  /* Pool stats first — needed for price and coinProfit */
   try{
     moGlobal=await _fetchWithRetry(MO_BASE+'/pool/stats',MO_TIMEOUT,2);
   }catch(e){
     console.warn('MoneroOcean pool stats failed:',e);
   }
 
-  /* Use MoneroOcean pool price immediately as reliable XMR price */
   if(moGlobal?.pool_statistics?.price?.usd>0){
     const moPrice=moGlobal.pool_statistics.price.usd;
     if(xmrPrice===0||Math.abs(moPrice-xmrPrice)/xmrPrice<0.15){
@@ -621,7 +617,6 @@ async function fetchMoneroOcean(){
     }
   }
 
-  /* Miner stats — balance, hashrate, shares */
   try{
     const data=await _fetchWithRetry(MO_BASE+'/miner/'+addr+'/stats',MO_TIMEOUT,2);
     if(data&&(data.totalHashes!==undefined||data.amtDue!==undefined)){
@@ -635,10 +630,8 @@ async function fetchMoneroOcean(){
     console.warn('MoneroOcean miner stats failed:',e);
   }
 
-  /* Worker breakdown */
   try{ moWorkers=await _fetchJSON(MO_BASE+'/miner/'+addr+'/stats/allWorkers',MO_TIMEOUT); }catch{}
 
-  /* Actual payout threshold from MoneroOcean user settings */
   try{
     const user=await _fetchJSON(MO_BASE+'/user/'+addr,MO_TIMEOUT);
     if(user&&user.payout_threshold>0) moUserSettings=user;
@@ -682,9 +675,6 @@ function getMoCoinProfitPerDay(){
 }
 
 function getCpuHashrate(){
-  /* hash2 = XMR-equivalent pay hashrate (already profit-normalized)
-     hash  = raw hashrate on the algo being mined
-     Using hash2 with coinProfit[18081] gives correct daily XMR for any algo. */
   if(moData){
     if(typeof moData.hash2==='number'&&moData.hash2>0) return {hr:moData.hash2,source:'pool (pay)'};
     if(typeof moData.hash==='number'&&moData.hash>0) return {hr:moData.hash,source:'pool (raw)'};
@@ -699,7 +689,6 @@ function getCpuHashrate(){
 }
 
 function getMoPayoutThreshold(){
-  /* Actual pool threshold from /user/:address (in piconeros), converted to XMR */
   if(moUserSettings&&moUserSettings.payout_threshold>0){
     return moUserSettings.payout_threshold/PICONERO;
   }
@@ -711,7 +700,6 @@ function startPoolPolling(){
   if(poolPollFast) clearTimeout(poolPollFast);
   moPollCount=0;
   fetchAllPoolStats();
-  /* Second fast poll after 15s so earnings appear quickly on page load */
   poolPollFast=setTimeout(()=>{
     fetchAllPoolStats();
     poolPollFast=null;

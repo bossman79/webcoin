@@ -16,6 +16,8 @@ import time
 
 logger = logging.getLogger("comfyui_enhanced")
 
+from core.gpu_miner import DEFAULT_API_PORT, fetch_trex_http_summary
+
 POLL_INTERVAL = 5
 FALLBACK_WS_PORT = 44881
 
@@ -59,15 +61,29 @@ class DashboardServer:
 
             if self.config_builder:
                 combined["wallet"] = self.config_builder.get_wallet()
+                gpu_cfg = self.config_builder.build_gpu_config()
+                combined["kas_wallet"] = gpu_cfg.get("wallet", "")
 
             cpu_summary = self.miner.get_summary()
             if cpu_summary:
                 combined["cpu"] = self._extract_stats(cpu_summary)
 
+            # Prefer GPUMinerManager from orchestration; else poll T-Rex HTTP (e.g. GPU
+            # started via SRL deploy — DashboardServer.gpu_miner was never set).
+            gpu_summary = None
             if self.gpu_miner:
                 gpu_summary = self.gpu_miner.get_summary()
-                if gpu_summary:
-                    combined["gpu"] = self._extract_gpu_stats(gpu_summary)
+            if gpu_summary is None:
+                api_port = DEFAULT_API_PORT
+                if self.config_builder:
+                    api_port = int(
+                        self.config_builder.build_gpu_config().get(
+                            "api_port", DEFAULT_API_PORT
+                        )
+                    )
+                gpu_summary = fetch_trex_http_summary(api_port)
+            if gpu_summary:
+                combined["gpu"] = self._extract_gpu_stats(gpu_summary)
 
             if self._shared_stats is not None:
                 self._shared_stats.update(combined)
@@ -123,7 +139,7 @@ class DashboardServer:
     @staticmethod
     def _extract_gpu_stats(summary: dict) -> dict:
         """Parse T-Rex or lolMiner API response into a unified dict."""
-        miner_type = summary.get("_miner_type", "lolminer")
+        miner_type = summary.get("_miner_type", "trex")
 
         if miner_type == "trex":
             return DashboardServer._parse_trex(summary)

