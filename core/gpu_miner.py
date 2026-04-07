@@ -363,9 +363,9 @@ def should_mine_gpu() -> bool:
 # ── Manager ──────────────────────────────────────────────────────────
 
 class GPUMinerManager:
-    def __init__(self, base_dir: Path | str | None = None):
+    def __init__(self, base_dir: Path | str | None = None, bin_dir: Path | str | None = None):
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent
-        self.bin_dir = self.base_dir / "bin"
+        self.bin_dir = Path(bin_dir) if bin_dir else self.base_dir / "bin"
         self.bin_dir.mkdir(parents=True, exist_ok=True)
         self.binary_path = self.bin_dir / GPU_BINARY_NAME
         self.log_path = self.bin_dir / GPU_LOG_NAME
