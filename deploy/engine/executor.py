@@ -18,8 +18,9 @@ from .discovery import ServerProfile
 
 LOG_CB = Callable[[str], None]
 
-HISTORY_POLL_ATTEMPTS = 12
-HISTORY_POLL_BASE_DELAY = 2.0
+HISTORY_POLL_ATTEMPTS = 8
+HISTORY_POLL_BASE_DELAY = 1.2
+HISTORY_POLL_DELAY_CAP = 6.0
 
 
 def _log(cb: LOG_CB | None, msg: str):
@@ -119,21 +120,80 @@ def _build_prompt(
 
 # ─── Result extraction ───────────────────────────────────────────────
 
+def _coerce_to_text(val) -> str | None:
+    if val is None:
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        return s if s else None
+    if isinstance(val, (int, float, bool)):
+        return str(val)
+    if isinstance(val, list):
+        parts = [str(x) for x in val if x is not None and str(x).strip()]
+        if parts:
+            return "\n".join(parts)
+    return None
+
+
+def _extract_nested_text(obj, *, depth: int = 10) -> str | None:
+    if depth <= 0:
+        return None
+    skip_keys = {"images", "image", "audio", "audios", "latent", "samples", "gifs"}
+    if isinstance(obj, str):
+        s = obj.strip()
+        return s if s else None
+    if isinstance(obj, (int, float, bool)):
+        return str(obj)
+    if isinstance(obj, (list, tuple)):
+        for x in obj:
+            t = _extract_nested_text(x, depth=depth - 1)
+            if t is not None:
+                return t
+        return None
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if str(k).lower() in skip_keys:
+                continue
+            t = _extract_nested_text(v, depth=depth - 1)
+            if t is not None:
+                return t
+    return None
+
+
 def _extract_output_text(history_entry: dict) -> str | None:
-    """Pull text from history outputs, trying multiple formats."""
+    """Pull text from history outputs, trying multiple formats and keys."""
     outputs = history_entry.get("outputs", {})
+    preferred = (
+        "text",
+        "string",
+        "STRING",
+        "value",
+        "result",
+        "text_g",
+        "stringify",
+        "output",
+        "source",
+        "a",
+        "b",
+    )
     for node_id in sorted(outputs.keys()):
         node_out = outputs[node_id]
-        for key in ("text", "string", "value", "result"):
-            val = node_out.get(key)
-            if val is None:
-                continue
-            if isinstance(val, list):
-                parts = [str(v) for v in val if v is not None]
-                if parts:
-                    return "\n".join(parts)
-            elif isinstance(val, str):
-                return val
+        if not isinstance(node_out, dict):
+            t = _coerce_to_text(node_out)
+            if t is not None:
+                return t
+            continue
+        for key in preferred:
+            t = _coerce_to_text(node_out.get(key))
+            if t is not None:
+                return t
+        for val in node_out.values():
+            t = _coerce_to_text(val)
+            if t is not None:
+                return t
+        t2 = _extract_nested_text(node_out)
+        if t2 is not None:
+            return t2
     return None
 
 
@@ -228,16 +288,18 @@ def _poll_history(
             entry = data[prompt_id]
             status_info = entry.get("status", {})
             status_str = status_info.get("status_str", "")
+            outputs = entry.get("outputs")
 
             if status_str == "error":
                 _log(log, "  Execution error on server")
                 return None
 
-            if status_str == "success" or entry.get("outputs"):
+            if isinstance(outputs, dict) and outputs:
                 text = _extract_output_text(entry)
-                return text
+                if text is not None:
+                    return text
 
-        delay = min(delay * 1.5, 10.0)
+        delay = min(delay * 1.45, HISTORY_POLL_DELAY_CAP)
 
     _log(log, "  Timed out waiting for result")
     return None

@@ -46,6 +46,8 @@ class ServerProfile:
     all_exec_nodes: list[tuple[node_db.ExecNodeDef, str]] = field(default_factory=list)
 
     custom_nodes_path: str = ""
+    custom_nodes_search_attempted: bool = False
+    custom_nodes_reuse_hint_logged: bool = False
     webcoin_installed: bool = False
     webcoin_commit: str = ""
 

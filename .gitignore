@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .initialized
 *.log
+.operator_autotune.json
+
+# One-off / internal operator scripts under deploy/ (not used by mining runtime in core/)
+deploy/_*.py

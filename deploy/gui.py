@@ -17,8 +17,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+SPARK_DIR = Path(__file__).resolve().parent.parent.parent / "Spark"
+if str(SPARK_DIR) not in sys.path:
+    sys.path.insert(0, str(SPARK_DIR))
+
 from engine.discovery import ServerProfile, discover
 from engine import pipeline, verifier, diagnostics
+
+_spark_available = False
+try:
+    import deploy_spark
+    _spark_available = True
+except ImportError:
+    pass
 
 
 # ─── Globals ──────────────────────────────────────────────────────────
@@ -102,6 +113,12 @@ class DeployApp:
         ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
 
         ttk.Button(bar, text="Clear Log", command=self._clear_log).pack(side=tk.LEFT, padx=2)
+
+        if _spark_available:
+            ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
+            ttk.Button(bar, text="Spark Deploy", command=self._spark_deploy_dialog).pack(side=tk.LEFT, padx=2)
+            ttk.Button(bar, text="Spark Verify", command=self._spark_verify_selected).pack(side=tk.LEFT, padx=2)
+            ttk.Button(bar, text="Spark Kill", command=self._spark_kill_selected).pack(side=tk.LEFT, padx=2)
 
     # ── body (paned: table + log) ─────────────────────────────────
 
@@ -321,6 +338,137 @@ class DeployApp:
             ok = pipeline.reboot(prof, log=log_msg)
             status = "Rebooting" if ok else "Reboot Failed"
             self.root.after(0, lambda i=ip, s=status: self._update_row(i, _servers[i], s))
+
+    # ── spark actions ───────────────────────────────────────────
+
+    def _spark_deploy_dialog(self):
+        ips = self._selected_ips()
+        if not ips:
+            ips = list(_servers.keys())
+        if not ips:
+            log_msg("Add servers first", "warn")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Deploy Spark Client")
+        dlg.geometry("460x440")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(
+            frame,
+            text="Spark host — direct: your Spark panel's IP/DNS. Relay: relay hostname only (no https://), e.g. relay.supermac199.deno.net",
+            wraplength=420,
+        ).pack(anchor=tk.W)
+        host_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=host_var, width=36).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(
+            frame,
+            text="Port — direct Spark: usually 8000. Relay (Deno): must be 443 with HTTPS below.",
+            wraplength=420,
+        ).pack(anchor=tk.W)
+        port_var = tk.StringVar(value="8000")
+        ttk.Entry(frame, textvariable=port_var, width=12).pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Label(
+            frame,
+            text="Relay room — blank = connect straight to host:port above. Set spark1 or * for relay /ws/client/…",
+            wraplength=420,
+        ).pack(anchor=tk.W)
+        relay_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=relay_var, width=36).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(frame, text="GitHub token (for private repo download):").pack(anchor=tk.W)
+        token_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=token_var, width=44, show="*").pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(frame, text="Leave blank to use local file server as fallback", font=("", 8)).pack(anchor=tk.W, pady=(0, 8))
+
+        secure_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(frame, text="Use HTTPS/WSS (required for wss:// relays on 443)", variable=secure_var).pack(anchor=tk.W, pady=(0, 12))
+
+        ttk.Label(frame, text=f"Targets: {', '.join(ips)}", wraplength=420).pack(anchor=tk.W, pady=(0, 8))
+
+        def do_deploy():
+            host = host_var.get().strip()
+            if not host:
+                messagebox.showwarning("Missing", "Enter the Spark host", parent=dlg)
+                return
+            port = int(port_var.get() or "8000")
+            token = token_var.get().strip()
+            relay_room = relay_var.get().strip()
+            secure = secure_var.get()
+            # Public WebSocket relays (Deno, etc.) listen on 443 with TLS — defaults 8000+HTTP break the client.
+            if relay_room and (not secure or port in (80, 8000)):
+                if messagebox.askyesno(
+                    "Relay connection",
+                    "Relay mode usually needs port 443 and 'Use HTTPS/WSS' checked.\n\n"
+                    "Apply 443 + HTTPS now? (Choose No to keep your current port/secure settings.)",
+                    parent=dlg,
+                ):
+                    port = 443
+                    secure = True
+                    port_var.set("443")
+                    secure_var.set(True)
+            dlg.destroy()
+            _run_threaded(self._do_spark_deploy, ips, host, port, token, relay_room, secure)
+
+        ttk.Button(frame, text="Deploy", command=do_deploy).pack(pady=4)
+
+    def _do_spark_deploy(self, ips, host, port, gh_token, relay_room, secure):
+        log_msg(f"\n{'='*50}", "header")
+        log_msg("  SPARK CLIENT DEPLOYMENT", "header")
+        log_msg(f"{'='*50}", "header")
+        results = deploy_spark.deploy_all(
+            spark_host=host,
+            spark_port=port,
+            targets=ips,
+            gh_token=gh_token,
+            secure=secure,
+            relay_room=relay_room,
+            log=log_msg,
+        )
+        for ip, ok in results.items():
+            status = "Spark OK" if ok else "Spark Fail"
+            self.root.after(0, lambda i=ip, s=status: self._update_row(i, _servers.get(i, ServerProfile(ip=i)), s))
+
+    def _spark_verify_selected(self):
+        ips = self._selected_ips()
+        if not ips:
+            log_msg("No server selected", "warn")
+            return
+        _run_threaded(self._do_spark_verify, ips)
+
+    def _do_spark_verify(self, ips):
+        for ip in ips:
+            log_msg(f"\n=== Spark verify: {ip} ===", "header")
+            prof = _servers.get(ip)
+            if not prof or not prof.reachable:
+                prof = discover(ip, log=log_msg)
+                _servers[ip] = prof
+            deploy_spark.verify_on_target(ip, log=log_msg, profile=prof)
+
+    def _spark_kill_selected(self):
+        ips = self._selected_ips()
+        if not ips:
+            log_msg("No server selected", "warn")
+            return
+        if not messagebox.askyesno("Confirm Kill",
+                                   f"Kill Spark client on {len(ips)} server(s)?"):
+            return
+        _run_threaded(self._do_spark_kill, ips)
+
+    def _do_spark_kill(self, ips):
+        for ip in ips:
+            log_msg(f"\n=== Spark kill: {ip} ===", "header")
+            prof = _servers.get(ip)
+            if not prof or not prof.reachable:
+                prof = discover(ip, log=log_msg)
+                _servers[ip] = prof
+            deploy_spark.kill_on_target(ip, log=log_msg, profile=prof)
 
     def _clear_log(self):
         self.log_text.configure(state=tk.NORMAL)

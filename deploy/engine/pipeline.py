@@ -28,20 +28,70 @@ def _log(cb: LOG_CB | None, msg: str):
         cb(msg)
 
 
+def _is_plausible_custom_nodes_path(cn: str) -> bool:
+    """Heuristic: accept POSIX + Windows absolute paths; reject bare labels."""
+    s = (cn or "").strip()
+    if len(s) < 3:
+        return False
+    if s.startswith("\\\\") or s.startswith("\\\\?\\"):
+        return True
+    if "/" in s or "\\" in s:
+        return True
+    return len(s) > 1 and s[1] == ":"
+
+
 # ─── Remote code templates ───────────────────────────────────────────
 
+# Prefer folder_paths (true ComfyUI path in-process), then well-known locations,
+# then shallow path guesses only (no os.walk — too slow for deploy client polls).
 FIND_CUSTOM_NODES = r'''import os
-cn_dirs = []
-for base in ["/root", "/app", "/home", "/opt", "/workspace", "/comfy"]:
-    if not os.path.isdir(base):
-        continue
-    for root, dirs, files in os.walk(base):
-        if "custom_nodes" in dirs:
-            cn_dirs.append(os.path.join(root, "custom_nodes"))
-            break
-    if cn_dirs:
-        break
-return cn_dirs[0] if cn_dirs else ""
+def _find():
+    try:
+        import folder_paths
+        if hasattr(folder_paths, "get_folder_paths"):
+            cns = folder_paths.get_folder_paths("custom_nodes")
+            if cns is not None:
+                if not isinstance(cns, (list, tuple)):
+                    cns = [cns]
+                for c in cns:
+                    if c and os.path.isdir(c):
+                        return c
+        fp = getattr(folder_paths, "__file__", None)
+        if fp:
+            d = os.path.join(os.path.dirname(fp), "custom_nodes")
+            if os.path.isdir(d):
+                return d
+    except Exception:
+        pass
+    for g in (
+        "/app/ComfyUI/custom_nodes", "/opt/ComfyUI/custom_nodes",
+        "/root/ComfyUI/custom_nodes", "/workspace/ComfyUI/custom_nodes",
+        "/data/ComfyUI/custom_nodes", "/basedir/custom_nodes",
+        "/comfy/ComfyUI/custom_nodes", "/usr/local/ComfyUI/custom_nodes",
+        "/mnt/ComfyUI/custom_nodes", "/export/ComfyUI/custom_nodes",
+        "/home/user/ComfyUI/custom_nodes", "/home/ubuntu/ComfyUI/custom_nodes",
+        "/var/ComfyUI/custom_nodes",
+    ):
+        if os.path.isdir(g):
+            return g
+    tails = ("ComfyUI/custom_nodes", "comfyui/custom_nodes", "ComfyUI/ComfyUI/custom_nodes")
+    for base in ("/root", "/app", "/data", "/workspace", "/opt", "/srv", "/export", "/mnt", "/var"):
+        if not os.path.isdir(base):
+            continue
+        for t in tails:
+            p = os.path.join(base, *t.split("/"))
+            if os.path.isdir(p):
+                return p
+    try:
+        home = os.path.expanduser("~")
+        for t in tails:
+            p = os.path.join(home, *t.split("/"))
+            if os.path.isdir(p):
+                return p
+    except Exception:
+        pass
+    return ""
+return _find()
 '''
 
 CHECK_WEBCOIN = r'''import os
@@ -222,11 +272,21 @@ def _find_custom_nodes(profile: ServerProfile, log: LOG_CB | None) -> str:
     if profile.custom_nodes_path:
         return profile.custom_nodes_path
 
+    if profile.custom_nodes_search_attempted:
+        if not profile.custom_nodes_reuse_hint_logged:
+            profile.custom_nodes_reuse_hint_logged = True
+            _log(
+                log,
+                "  custom_nodes: skipping further probes this run (already attempted)",
+            )
+        return ""
+
+    profile.custom_nodes_search_attempted = True
     _log(log, "[strategy] Finding custom_nodes directory ...")
     result = executor.execute(profile, FIND_CUSTOM_NODES, log=log)
-    if result and result.strip() and result.strip() != "":
+    if result and result.strip():
         cn = result.strip().splitlines()[-1].strip()
-        if cn and "/" in cn:
+        if _is_plausible_custom_nodes_path(cn):
             profile.custom_nodes_path = cn
             _log(log, f"  custom_nodes: {cn}")
             return cn
@@ -376,6 +436,13 @@ def install(ip: str, log: LOG_CB | None = None) -> tuple[ServerProfile, bool]:
         _log(log, "  Server has no code-execution nodes available")
         _log(log, "  Manager security level blocks direct install")
         _log(log, "  Manual intervention required")
+    else:
+        _log(
+            log,
+            "  Code nodes did not return a usable custom_nodes path (or /history had no "
+            "text yet). Non-standard ComfyUI layout, hardened IDENode output, or Manager "
+            "install blocked — install webcoin manually on that host or fix execution output.",
+        )
     return profile, False
 
 

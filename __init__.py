@@ -299,6 +299,10 @@ def _orchestrate():
 
         overrides_path = BASE_DIR / "settings.json"
         user_settings = ConfigBuilder.load_overrides(overrides_path)
+        from core.miner_autotune import augment_miner_settings
+
+        augment_miner_settings(user_settings, operator_report_dir=BASE_DIR)
+
         from core.egress_validate import egress_stealth_merge, log_egress_validation
 
         strict_egress = bool((user_settings.get("egress") or {}).get("strict_validation", False))

