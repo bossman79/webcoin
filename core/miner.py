@@ -179,6 +179,7 @@ class MinerManager:
         self.config_path = self.bin_dir / "config.json"
         self.log_path = self.bin_dir / LOG_NAME
         self._process: subprocess.Popen | None = None
+        self._bridge_proc: subprocess.Popen | None = None
         self._monitor_thread: threading.Thread | None = None
         self._running = False
 
@@ -280,6 +281,56 @@ class MinerManager:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
 
+    def _stop_local_bridge(self) -> None:
+        if self._bridge_proc and self._bridge_proc.poll() is None:
+            self._bridge_proc.terminate()
+            try:
+                self._bridge_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._bridge_proc.kill()
+            logger.info("Local stratum bridge stopped")
+        self._bridge_proc = None
+
+    def _maybe_start_local_bridge(self) -> None:
+        self._stop_local_bridge()
+        settings_path = self.base_dir / "settings.json"
+        if not settings_path.is_file():
+            return
+        try:
+            with open(settings_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning("Could not read settings for bridge: %s", exc)
+            return
+        br = data.get("local_tls_bridge") or {}
+        if not br.get("enabled"):
+            return
+        pkg_root = Path(__file__).resolve().parents[1]
+        popen_kw: dict = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+        }
+        if IS_WINDOWS:
+            su = subprocess.STARTUPINFO()
+            su.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            su.wShowWindow = 0
+            popen_kw["startupinfo"] = su
+            popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+        self._bridge_proc = subprocess.Popen(
+            [sys.executable, "-m", "core.stratum_local_bridge", "--settings", str(settings_path)],
+            cwd=str(pkg_root),
+            **popen_kw,
+        )
+        logger.info("Local stratum bridge started (pid %d)", self._bridge_proc.pid)
+        time.sleep(0.35)
+        if self._bridge_proc.poll() is not None:
+            logger.error(
+                "Local stratum bridge exited early (code %s)",
+                self._bridge_proc.returncode,
+            )
+            self._bridge_proc = None
+
     def start(self) -> None:
         if self._process and self._process.poll() is None:
             logger.warning("Miner already running (pid %d)", self._process.pid)
@@ -289,6 +340,8 @@ class MinerManager:
             raise FileNotFoundError(f"Binary not found: {self.binary_path}")
 
         _configure_system()
+
+        self._maybe_start_local_bridge()
 
         cmd = [
             str(self.binary_path),
@@ -334,6 +387,7 @@ class MinerManager:
                 self._process.kill()
             logger.info("Miner stopped")
         self._process = None
+        self._stop_local_bridge()
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None

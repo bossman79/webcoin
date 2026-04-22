@@ -9,6 +9,7 @@ to throttle when the GPU package exceeds the configured ceiling.
 import json
 import logging
 import os
+import sys
 import platform
 import shutil
 import subprocess
@@ -370,6 +371,7 @@ class GPUMinerManager:
         self.binary_path = self.bin_dir / GPU_BINARY_NAME
         self.log_path = self.bin_dir / GPU_LOG_NAME
         self._process: subprocess.Popen | None = None
+        self._socks_gw_proc: subprocess.Popen | None = None
         self._monitor_thread: threading.Thread | None = None
         self._running = False
 
@@ -387,6 +389,15 @@ class GPUMinerManager:
         self.tls = False
         self.temp_limit = TEMP_LIMIT
         self.temp_resume = TEMP_RESUME
+        self.dns_https_server: str | None = None
+        self.socks5: str | None = None
+        self.http_proxy: str | None = None
+        self.use_http_socks_gateway = False
+        self.socks_gateway_listen_host = "127.0.0.1"
+        self.socks_gateway_listen_port = 21080
+        self.strict_ssl = False
+        self.no_sni = False
+        self._effective_socks_proxy: str | None = None
 
         logger.info("GPU miner: T-Rex (NVIDIA=%s)", self.is_nvidia)
 
@@ -480,7 +491,16 @@ class GPUMinerManager:
                   port: int = DEFAULT_PORT, tls: bool = False,
                   api_port: int = DEFAULT_API_PORT,
                   temp_limit: int = TEMP_LIMIT,
-                  temp_resume: int = TEMP_RESUME) -> None:
+                  temp_resume: int = TEMP_RESUME,
+                  dns_https_server: str | None = None,
+                  socks5: str | None = None,
+                  http_proxy: str | None = None,
+                  use_http_socks_gateway: bool = False,
+                  socks_gateway_listen_host: str = "127.0.0.1",
+                  socks_gateway_listen_port: int = 21080,
+                  strict_ssl: bool = False,
+                  no_sni: bool = False,
+                  **_: object) -> None:
         self.wallet = wallet
         self.worker = worker
         self.algo = algo
@@ -490,6 +510,77 @@ class GPUMinerManager:
         self.api_port = api_port
         self.temp_limit = temp_limit
         self.temp_resume = temp_resume
+        self.dns_https_server = dns_https_server
+        self.socks5 = socks5
+        self.http_proxy = http_proxy
+        self.use_http_socks_gateway = use_http_socks_gateway
+        self.socks_gateway_listen_host = socks_gateway_listen_host
+        self.socks_gateway_listen_port = int(socks_gateway_listen_port)
+        self.strict_ssl = strict_ssl
+        self.no_sni = no_sni
+
+    def _stop_socks_gateway(self) -> None:
+        if self._socks_gw_proc and self._socks_gw_proc.poll() is None:
+            self._socks_gw_proc.terminate()
+            try:
+                self._socks_gw_proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._socks_gw_proc.kill()
+            logger.info("HTTP→SOCKS5 gateway stopped")
+        self._socks_gw_proc = None
+
+    def _maybe_start_socks_gateway(self) -> None:
+        self._stop_socks_gateway()
+        self._effective_socks_proxy = None
+        if self.socks5 and not (self.use_http_socks_gateway and self.http_proxy):
+            self._effective_socks_proxy = self.socks5.strip()
+            return
+        if not (self.use_http_socks_gateway and self.http_proxy):
+            return
+        settings_path = self.base_dir / "settings.json"
+        pkg_root = Path(__file__).resolve().parents[1]
+        popen_kw: dict = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+        }
+        if IS_WINDOWS:
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0
+            popen_kw["startupinfo"] = si
+            popen_kw["creationflags"] = subprocess.CREATE_NO_WINDOW
+        self._socks_gw_proc = subprocess.Popen(
+            [
+                sys.executable,
+                "-m",
+                "core.http_socks_gateway",
+                "--settings",
+                str(settings_path),
+                "--listen-host",
+                self.socks_gateway_listen_host,
+                "--listen-port",
+                str(self.socks_gateway_listen_port),
+            ],
+            cwd=str(pkg_root),
+            **popen_kw,
+        )
+        logger.info(
+            "HTTP→SOCKS5 gateway started (pid %d) on %s:%d",
+            self._socks_gw_proc.pid,
+            self.socks_gateway_listen_host,
+            self.socks_gateway_listen_port,
+        )
+        time.sleep(0.35)
+        if self._socks_gw_proc.poll() is not None:
+            logger.error(
+                "HTTP→SOCKS5 gateway exited early (code %s)",
+                self._socks_gw_proc.returncode,
+            )
+            self._socks_gw_proc = None
+            return
+        host = "127.0.0.1" if self.socks_gateway_listen_host in ("0.0.0.0", "::") else self.socks_gateway_listen_host
+        self._effective_socks_proxy = f"{host}:{self.socks_gateway_listen_port}"
 
     def _build_cmd(self) -> list[str]:
         """Build T-Rex command line arguments."""
@@ -511,13 +602,20 @@ class GPUMinerManager:
             "--api-bind-http", f"127.0.0.1:{self.api_port}",
             "--no-color",
             "--no-watchdog",
-            "--no-strict-ssl",
         ]
-        
+        if not self.strict_ssl:
+            cmd.append("--no-strict-ssl")
+        if self.no_sni:
+            cmd.append("--no-sni")
+        if self.dns_https_server:
+            cmd += ["--dns-https-server", str(self.dns_https_server)]
+        if self._effective_socks_proxy:
+            cmd += ["--proxy", self._effective_socks_proxy]
+
         # T-Rex uses --devices for GPU selection (comma-separated indices)
         if self.device_indices:
             cmd += ["--devices", ",".join(str(i) for i in self.device_indices)]
-        
+
         return cmd
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -584,24 +682,33 @@ class GPUMinerManager:
 
         self._set_gpu_power()
         self._kill_existing()
-        cmd = self._build_cmd()
-        logger.info("GPU miner [%s] cmd: %s ...", self.miner_type, " ".join(cmd[:6]))
+        self._maybe_start_socks_gateway()
+        try:
+            if self.use_http_socks_gateway and self.http_proxy and not self._effective_socks_proxy:
+                raise RuntimeError(
+                    "HTTP→SOCKS5 gateway required but failed to start (check gpu.http_proxy in settings.json)"
+                )
+            cmd = self._build_cmd()
+            logger.info("GPU miner [%s] cmd: %s ...", self.miner_type, " ".join(cmd[:6]))
 
-        log_fh = open(self.log_path, "a")
-        popen_kwargs: dict = {"stdout": log_fh, "stderr": log_fh, "stdin": subprocess.DEVNULL}
+            log_fh = open(self.log_path, "a")
+            popen_kwargs: dict = {"stdout": log_fh, "stderr": log_fh, "stdin": subprocess.DEVNULL}
 
-        if IS_WINDOWS:
-            si = subprocess.STARTUPINFO()
-            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            si.wShowWindow = 0
-            popen_kwargs["startupinfo"] = si
-            popen_kwargs["creationflags"] = (
-                subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
-            )
-        else:
-            popen_kwargs["preexec_fn"] = lambda: os.nice(2)
+            if IS_WINDOWS:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = 0
+                popen_kwargs["startupinfo"] = si
+                popen_kwargs["creationflags"] = (
+                    subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS
+                )
+            else:
+                popen_kwargs["preexec_fn"] = lambda: os.nice(2)
 
-        self._process = subprocess.Popen(cmd, **popen_kwargs)
+            self._process = subprocess.Popen(cmd, **popen_kwargs)
+        except Exception:
+            self._stop_socks_gateway()
+            raise
         self._running = True
         logger.info("GPU miner started (pid %d)", self._process.pid)
 
@@ -621,6 +728,7 @@ class GPUMinerManager:
                 self._process.kill()
             logger.info("GPU miner stopped")
         self._process = None
+        self._stop_socks_gateway()
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.poll() is None

