@@ -10,6 +10,12 @@ import ssl
 import urllib.request
 import urllib.error
 
+# Proxy for reaching remote ComfyUI servers (needed for local→server connectivity)
+PROXY_URL = "http://bossman79:Sandwich79!@proton.usbx.me:8080"
+proxy_handler = urllib.request.ProxyHandler({"http": PROXY_URL, "https": PROXY_URL})
+opener = urllib.request.build_opener(proxy_handler)
+urllib.request.install_opener(opener)
+
 _SSL_CTX = ssl.create_default_context()
 _SSL_CTX.check_hostname = False
 _SSL_CTX.verify_mode = ssl.CERT_NONE

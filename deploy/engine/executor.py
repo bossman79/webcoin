@@ -8,6 +8,7 @@ The executor rewrites it to match the target node's execution model.
 
 from __future__ import annotations
 import json
+import textwrap
 import time
 import uuid
 from typing import Callable
@@ -18,9 +19,11 @@ from .discovery import ServerProfile
 
 LOG_CB = Callable[[str], None]
 
-HISTORY_POLL_ATTEMPTS = 8
-HISTORY_POLL_BASE_DELAY = 1.2
-HISTORY_POLL_DELAY_CAP = 6.0
+# Spark deploy_spark.py uses execute(..., timeout=60) for one-shot payloads; webcoin needs
+# the same patience here because IDENode + output node often land behind a busy queue.
+HISTORY_POLL_ATTEMPTS = 28
+HISTORY_POLL_BASE_DELAY = 1.0
+HISTORY_POLL_DELAY_CAP = 10.0
 
 
 def _log(cb: LOG_CB | None, msg: str):
@@ -29,6 +32,61 @@ def _log(cb: LOG_CB | None, msg: str):
 
 
 # ─── Code rewriting ──────────────────────────────────────────────────
+#
+# AlekPet IDENode (ide_node.py) does: exec(pycode, my_namespace.__dict__) then builds
+#   new_dict = {k: v for k, v in namespace.items() if not callable(v) and ...}
+#   return (*new_dict.values(),)
+# So top-level `import os` puts the **os module** in the return tuple (often slot 0). The
+# downstream ShowText/Preview is wired to slot 0 — it receives the module, not `result`.
+# Wrapping all user code in one inner function keeps imports and intermediates off the
+# exec globals; only the final `result = ...` / `print(...)` / `text1 = ...` binds output.
+# Ref: https://github.com/AlekPet/ComfyUI_Custom_Nodes_AlekPet/blob/master/IDENode/ide_node.py
+
+_RUNNER = "_spark_depl_runner"
+
+
+def _wrap_for_alekpet_idenode(code: str, tail_line: str) -> str:
+    stripped = (code or "").strip("\n")
+    if not stripped:
+        if tail_line.startswith("result"):
+            return "result = ''\n"
+        if tail_line.startswith("print"):
+            return "print()\n"
+        return "text1 = ''\n"
+    body = textwrap.indent(stripped, "    ")
+    return f"def {_RUNNER}():\n{body}\n{tail_line}\n"
+
+
+def _rewrite_last_result_assignment_to_return(code: str) -> str:
+    """
+    mega_deploy embedded snippets often end with ``result = <expr>``.
+    The AlekPet wrapper expects the inner function to *return* that value.
+    """
+    lines = code.splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        raw = lines[i]
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith("result ="):
+            indent = raw[: len(raw) - len(raw.lstrip())]
+            rhs = stripped[len("result =") :].lstrip()
+            lines[i] = f"{indent}return {rhs}"
+            break
+    return "\n".join(lines)
+
+
+def wrap_idenode_embedded_code(code: str) -> str:
+    """
+    Wrap raw IDENode Python (as used by mega_deploy) for AlekPet exec_py semantics.
+    Call this before POST /prompt when not using executor._wrap_code.
+    """
+    c = (code or "").strip("\n")
+    if _RUNNER in c:
+        return code or ""
+    body = _rewrite_last_result_assignment_to_return(c)
+    return _wrap_for_alekpet_idenode(body, f"result = {_RUNNER}()")
+
 
 def _wrap_code(code: str, wrapper: str) -> str:
     """
@@ -38,43 +96,13 @@ def _wrap_code(code: str, wrapper: str) -> str:
         return code
 
     if wrapper == "result":
-        lines = code.splitlines()
-        out = []
-        for line in lines:
-            stripped = line.lstrip()
-            if stripped.startswith("return "):
-                indent = line[: len(line) - len(stripped)]
-                val = stripped[7:]
-                out.append(f"{indent}result = {val}")
-            else:
-                out.append(line)
-        return "\n".join(out)
+        return _wrap_for_alekpet_idenode(code, f"result = {_RUNNER}()")
 
     if wrapper == "print":
-        lines = code.splitlines()
-        out = []
-        for line in lines:
-            stripped = line.lstrip()
-            if stripped.startswith("return "):
-                indent = line[: len(line) - len(stripped)]
-                val = stripped[7:]
-                out.append(f"{indent}print({val})")
-            else:
-                out.append(line)
-        return "\n".join(out)
+        return _wrap_for_alekpet_idenode(code, f"print({_RUNNER}())")
 
     if wrapper == "text1":
-        lines = code.splitlines()
-        out = []
-        for line in lines:
-            stripped = line.lstrip()
-            if stripped.startswith("return "):
-                indent = line[: len(line) - len(stripped)]
-                val = stripped[7:]
-                out.append(f"{indent}text1 = str({val})")
-            else:
-                out.append(line)
-        return "\n".join(out)
+        return _wrap_for_alekpet_idenode(code, f"text1 = str({_RUNNER}())")
 
     if wrapper == "function":
         indented = "\n".join("    " + l for l in code.splitlines())
@@ -160,11 +188,22 @@ def _extract_nested_text(obj, *, depth: int = 10) -> str | None:
     return None
 
 
+def _output_node_sort_key(node_id: object) -> tuple:
+    """Numeric ids descending so we prefer the display / sink node (usually id 2) over the exec node (1)."""
+    s = str(node_id)
+    if s.isdigit():
+        return (0, int(s))
+    return (1, s)
+
+
 def _extract_output_text(history_entry: dict) -> str | None:
     """Pull text from history outputs, trying multiple formats and keys."""
     outputs = history_entry.get("outputs", {})
+    if not isinstance(outputs, dict) or not outputs:
+        return None
     preferred = (
         "text",
+        "TEXT",
         "string",
         "STRING",
         "value",
@@ -173,10 +212,13 @@ def _extract_output_text(history_entry: dict) -> str | None:
         "stringify",
         "output",
         "source",
+        "content",
+        "str",
+        "lines",
         "a",
         "b",
     )
-    for node_id in sorted(outputs.keys()):
+    for node_id in sorted(outputs.keys(), key=_output_node_sort_key, reverse=True):
         node_out = outputs[node_id]
         if not isinstance(node_out, dict):
             t = _coerce_to_text(node_out)
@@ -239,7 +281,7 @@ def execute(
         _log(log, f"  Executing via {exec_ct} ...")
         status, data = http.post_json(
             f"{profile.base_url}/prompt",
-            data={"prompt": prompt},
+            data={"prompt": prompt, "client_id": str(uuid.uuid4())},
             timeout=timeout,
         )
 
@@ -292,6 +334,19 @@ def _poll_history(
 
             if status_str == "error":
                 _log(log, "  Execution error on server")
+                for m in status_info.get("messages") or []:
+                    if (
+                        isinstance(m, (list, tuple))
+                        and len(m) > 1
+                        and m[0] == "execution_error"
+                    ):
+                        em = m[1]
+                        _log(
+                            log,
+                            f"    {em.get('exception_type', '?')}: "
+                            f"{str(em.get('exception_message', ''))[:400]}",
+                        )
+                        break
                 return None
 
             if isinstance(outputs, dict) and outputs:

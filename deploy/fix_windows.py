@@ -5,25 +5,22 @@ Nukes the broken dir, clones fresh, installs deps.
 
 import argparse
 import json
+import os
+import sys
 import time
 import urllib.request
 import urllib.error
 
+_DEPLOY_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DEPLOY_DIR not in sys.path:
+    sys.path.insert(0, _DEPLOY_DIR)
+from mega_deploy import FIND_CUSTOM_NODES  # noqa: E402
 
-CLONE_CODE = r"""
-import subprocess, os, sys, shutil, platform
 
-results = []
-
-cn = None
-try:
-    import folder_paths
-    if hasattr(folder_paths, 'get_folder_paths'):
-        cn = folder_paths.get_folder_paths('custom_nodes')[0]
-    else:
-        cn = os.path.join(os.path.dirname(folder_paths.__file__), 'custom_nodes')
-except:
-    pass
+CLONE_CODE = (
+    "import subprocess, os, sys, shutil, platform\n\nresults = []\n\n"
+    + FIND_CUSTOM_NODES
+    + r"""
 
 if not cn or not os.path.isdir(cn):
     for guess in [r'C:\Users\u88ni\Desktop\comfyui\custom_nodes', '/root/ComfyUI/custom_nodes']:
@@ -79,6 +76,7 @@ output = chr(10).join(results)
 print(output)
 output
 """
+)
 
 
 def main():
