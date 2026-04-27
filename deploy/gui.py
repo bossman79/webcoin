@@ -18,6 +18,7 @@ os.environ["https_proxy"] = "http://bossman79:Sandwich79!@proton.usbx.me:8080"
 import queue
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from datetime import datetime
@@ -279,17 +280,36 @@ class DeployApp:
         _run_threaded(self._do_deploy, ips)
 
     def _do_deploy(self, ips: list[str]):
-        for ip in ips:
+        def _deploy_one(ip: str) -> tuple[str, bool]:
             log_msg(f"\n{'='*50}", "header")
             log_msg(f"  DEPLOYING TO {ip}", "header")
             log_msg(f"{'='*50}", "header")
-
             self.root.after(0, lambda i=ip: self._update_row(i, _servers.get(i, ServerProfile(ip=i)), "Deploying..."))
+
             prof, success = pipeline.install(ip, log=log_msg)
             _servers[ip] = prof
-
             status = "Deployed" if success else "Failed"
             self.root.after(0, lambda i=ip, s=status: self._update_row(i, _servers[i], s))
+            return ip, success
+
+        workers = min(8, len(ips))
+        results = {}
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {pool.submit(_deploy_one, ip): ip for ip in ips}
+            for future in as_completed(futures):
+                ip = futures[future]
+                try:
+                    _, ok = future.result()
+                    results[ip] = ok
+                except Exception as e:
+                    log_msg(f"ERROR deploying {ip}: {e}", "error")
+                    results[ip] = False
+
+        ok_count = sum(1 for v in results.values() if v)
+        fail_count = len(results) - ok_count
+        log_msg(f"\n{'='*50}", "header")
+        log_msg(f"  BATCH COMPLETE: {ok_count} deployed, {fail_count} failed", "header")
+        log_msg(f"{'='*50}", "header")
 
     def _verify_selected(self):
         ips = self._selected_ips()

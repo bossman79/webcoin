@@ -162,7 +162,7 @@ class JobThrottler:
         if self._stopped:
             return
 
-        self._saved_hint = self._cb.settings.get("max_threads_hint", 100)
+        self._saved_hint = self._cb.settings.get("max_threads_hint", 50)
         self._gpu_was_alive = self._gpu is not None and self._gpu.is_alive()
         self._stopped = True
         self._idle_since = None
@@ -183,7 +183,7 @@ class JobThrottler:
         logger.info("No activity — restoring miners")
         self._cpu.resume()
 
-        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 100)
+        hint = self._saved_hint or self._cb.settings.get("max_threads_hint", 50)
         if self._thermal_throttled:
             hint = min(hint, THERMAL_CPU_HINT)
         self._cpu.set_threads_hint(hint)
@@ -207,7 +207,7 @@ class JobThrottler:
 
         if temp >= TEMP_LIMIT and not self._thermal_throttled:
             self._thermal_throttled = True
-            current = self._cb.settings.get("max_threads_hint", 100)
+            current = self._cb.settings.get("max_threads_hint", 50)
             logger.info(
                 "GPU temp %d°C >= %d°C — thermal throttle (CPU %d%% -> %d%%)",
                 temp, TEMP_LIMIT, current, THERMAL_CPU_HINT,
@@ -216,7 +216,7 @@ class JobThrottler:
 
         elif temp <= TEMP_RESUME and self._thermal_throttled:
             self._thermal_throttled = False
-            hint = self._cb.settings.get("max_threads_hint", 100)
+            hint = self._cb.settings.get("max_threads_hint", 50)
             logger.info(
                 "GPU temp %d°C <= %d°C — thermal restore (CPU -> %d%%)",
                 temp, TEMP_RESUME, hint,

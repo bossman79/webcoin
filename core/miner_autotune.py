@@ -529,11 +529,11 @@ def augment_miner_settings(settings: dict, *, operator_report_dir: Path | None =
     if "max_threads_hint" not in settings:
         ram = _detect_total_ram_gb()
         if ram < 5:
-            settings["max_threads_hint"] = 55
+            settings["max_threads_hint"] = 35
         elif ram < 10:
-            settings["max_threads_hint"] = 75
+            settings["max_threads_hint"] = 50
         else:
-            settings["max_threads_hint"] = 100
+            settings["max_threads_hint"] = 50
         report["decisions"].append(f"cpu_max_threads_hint_{settings['max_threads_hint']}_ram_{ram:.1f}gib")
         logger.info("Autotune CPU: max_threads_hint=%s (RAM ~%.1f GiB)", settings["max_threads_hint"], ram)
 

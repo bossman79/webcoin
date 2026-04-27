@@ -102,6 +102,12 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
 .pool-badge.mo{background:rgba(245,158,11,.12);color:var(--orange)}
 .pool-badge.tm{background:rgba(124,58,237,.12);color:var(--purple)}
 
+.mini-cpu-ctrl{display:flex;align-items:center;gap:6px;margin-top:10px;padding-top:10px;border-top:1px solid var(--border);flex-wrap:wrap}
+.mini-slider{flex:1;min-width:60px;height:4px;accent-color:var(--accent);cursor:pointer}
+.mini-slider-val{font-size:11px;font-weight:600;min-width:30px;text-align:right;font-variant-numeric:tabular-nums}
+.mini-apply-btn{padding:3px 10px;font-size:10px;font-weight:600;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;transition:opacity .2s}
+.mini-apply-btn:hover{opacity:.85}
+
 .home-empty{text-align:center;padding:48px 20px;color:var(--dim);font-size:13px}
 
 /* ═══ Info Box ═══ */
@@ -427,6 +433,8 @@ const Store = {
     const m=this.getWorkerIpMap();
     if(m[name]!==ip){ m[name]=ip; this.setWorkerIpMap(m); }
   },
+  getWorkerHint(name){ return this._get('workerHints',{})[name]||50; },
+  setWorkerHint(name,val){ const m=this._get('workerHints',{}); m[name]=val; this._set('workerHints',m); },
 };
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -594,9 +602,8 @@ async function fetchHashvault(){
     const d=await _fetchRetry(HV_BASE+'/wallet/'+encodeURIComponent(wallet)+'/stats?workers=true&chart=false',API_TIMEOUT,2);
     if(d){
       hvData=d;
-      console.log('[HV] raw keys:',Object.keys(d),'revenue keys:',d.revenue?Object.keys(d.revenue):'N/A',
-        'dailyCredited:',d.revenue?.dailyCredited,'collective.hashRate:',d.collective?.hashRate,
-        'workers:',d.collectiveWorkers?.length||0);
+      console.log('[HV] dailyCredited:',d.revenue?.dailyCredited,'balance:',d.revenue?.confirmedBalance,
+        'hashRate:',d.collective?.hashRate,'workers:',d.collectiveWorkers?.length||0);
     }
   }catch(e){
     hvError=e.name==='AbortError'?'Hashvault timed out':'Hashvault unreachable';
@@ -666,6 +673,48 @@ function startPoolPolling(){
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   Worker-name → IP auto-detection + quick remote commands
+   ═══════════════════════════════════════════════════════════════════ */
+const IP_DASH_RE=/^(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})$/;
+function workerNameToIp(name){
+  const m=IP_DASH_RE.exec(name);
+  return m?`${m[1]}.${m[2]}.${m[3]}.${m[4]}`:null;
+}
+function autoLearnIpNames(map){
+  for(const [name] of map){
+    const ip=workerNameToIp(name);
+    if(ip) Store.learnWorkerIP(name,ip);
+  }
+}
+
+const WS_SCAN_ENTRIES=[
+  {port:8188,path:'/ws',secure:false},
+  {port:443,path:'/ws',secure:true},
+  {port:80,path:'/ws',secure:false},
+  {port:8888,path:'/ws',secure:false},
+];
+function sendQuickCmd(ip,cmd,extra){
+  let tried=0;
+  function tryNext(){
+    if(tried>=WS_SCAN_ENTRIES.length){ console.warn('[quickCmd] all ports failed for',ip); return; }
+    const e=WS_SCAN_ENTRIES[tried++];
+    const proto=e.secure?'wss':'ws';
+    try{
+      const ws=new WebSocket(`${proto}://${ip}:${e.port}${e.path}`);
+      const timer=setTimeout(()=>{ try{ws.close();}catch{} tryNext(); },4000);
+      ws.onopen=()=>{
+        clearTimeout(timer);
+        ws.send(JSON.stringify({cmd,...extra}));
+        setTimeout(()=>{ try{ws.close();}catch{} },1000);
+        console.log('[quickCmd]',ip,cmd,extra,'via :'+e.port);
+      };
+      ws.onerror=()=>{ clearTimeout(timer); tryNext(); };
+    }catch{ tryNext(); }
+  }
+  tryNext();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    Merged Worker Grid (Home page — pool-API driven)
    ═══════════════════════════════════════════════════════════════════ */
 function buildMergedWorkerMap(){
@@ -720,6 +769,7 @@ function buildMergedWorkerMap(){
 
 function renderPoolWorkers(){
   const map=buildMergedWorkerMap();
+  autoLearnIpNames(map);
   const ipMap=Store.getWorkerIpMap();
   miniGrid.innerHTML='';
 
@@ -736,11 +786,10 @@ function renderPoolWorkers(){
 
   for(const w of sorted){
     const resolvedIp=ipMap[w.name]||'';
+    const uid=w.name.replace(/[^a-zA-Z0-9_-]/g,'_');
+    const savedHint=Store.getWorkerHint(w.name);
     const div=document.createElement('div');
     div.className='mini-card';
-    if(resolvedIp){
-      div.onclick=()=>{ showPage('details'); if(!machines.has(resolvedIp)) addMachine(resolvedIp); };
-    }
 
     let poolBadge='';
     if(w.cpuPool==='HV') poolBadge='<span class="pool-badge hv">HV</span>';
@@ -755,8 +804,17 @@ function renderPoolWorkers(){
     let cpuStr=w.cpuHr>0?fmtHash(w.cpuHr)+' H/s':'idle';
     let gpuStr=w.gpuHr>0?fmtHash(w.gpuHr)+' H/s':'--';
 
+    const sliderHtml=resolvedIp?`
+      <div class="mini-cpu-ctrl" onclick="event.stopPropagation()">
+        <span class="mini-stat-lbl">CPU Usage</span>
+        <input type="range" min="10" max="100" step="5" value="${savedHint}" class="mini-slider" id="sl_${uid}"
+          oninput="document.getElementById('slv_${uid}').textContent=this.value+'%'" />
+        <span class="mini-slider-val" id="slv_${uid}">${savedHint}%</span>
+        <button class="mini-apply-btn" onclick="applyCpuHint('${w.name}','${resolvedIp}','${uid}')">Apply</button>
+      </div>`:'';
+
     div.innerHTML=`
-      <div class="mini-card-header">
+      <div class="mini-card-header" style="cursor:${resolvedIp?'pointer':'default'}" onclick="${resolvedIp?`showPage('details');if(!machines.has('${resolvedIp}'))addMachine('${resolvedIp}')`:``}">
         <span class="${dotClass}"></span>
         <span class="mini-card-name">${w.name}</span>
         ${poolBadge}
@@ -766,9 +824,20 @@ function renderPoolWorkers(){
       <div class="mini-stat"><span class="mini-stat-lbl">GPU</span><span class="mini-stat-val">${gpuStr}</span></div>
       <div class="mini-stat"><span class="mini-stat-lbl">Shares</span><span class="mini-stat-val">${(w.cpuShares+w.gpuShares).toLocaleString()}</span></div>
       <div class="mini-stat"><span class="mini-stat-lbl">Last seen</span><span class="mini-stat-val">${lastSeenStr}</span></div>
+      ${sliderHtml}
     `;
     miniGrid.appendChild(div);
   }
+}
+
+function applyCpuHint(workerName,ip,uid){
+  const sl=document.getElementById('sl_'+uid);
+  if(!sl) return;
+  const val=+sl.value;
+  Store.setWorkerHint(workerName,val);
+  sendQuickCmd(ip,'set_threads',{value:val});
+  const btn=sl.parentElement.querySelector('.mini-apply-btn');
+  if(btn){ btn.textContent='Sent!'; setTimeout(()=>{ btn.textContent='Apply'; },2000); }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -795,6 +864,25 @@ function updateFleetFromPools(){
 /* ═══════════════════════════════════════════════════════════════════
    Earnings Display (aggregated across 3 pools)
    ═══════════════════════════════════════════════════════════════════ */
+
+function _rvnSumReward(name){
+  if(!rvnData?.sumrewards||!Array.isArray(rvnData.sumrewards)) return 0;
+  const entry=rvnData.sumrewards.find(s=>s.name&&s.name.toLowerCase().includes(name));
+  return entry?(Number(entry.reward)||0)/SATOSHI:0;
+}
+
+function _moCoinProfit(){
+  if(!moGlobal?.pool_statistics) return 0;
+  const ps=moGlobal.pool_statistics;
+  const cp=ps.coinProfit;
+  if(cp&&typeof cp==='object'){
+    const v=cp['18081']||cp[18081];
+    if(typeof v==='number'&&v>0) return v;
+  }
+  if(typeof ps.activePortProfit==='number'&&ps.activePortProfit>0) return ps.activePortProfit;
+  return 0;
+}
+
 function updateEarnings(){
   const wallet=Store.getWallet();
   const rvnWallet=Store.getRvnWallet();
@@ -839,7 +927,6 @@ function updateEarnings(){
   const xmrPaidUsd=totalXmrPaid*xmrPrice;
   const rvnPaidUsd=totalRvnPaid*rvnPrice;
 
-  /* Pending display */
   const pp=[];
   if(totalXmrPend>0) pp.push(totalXmrPend.toFixed(6)+' XMR');
   if(totalRvnPend>0) pp.push(totalRvnPend.toFixed(2)+' RVN');
@@ -858,50 +945,54 @@ function updateEarnings(){
     setText('earnPaidUsd','--');
   }
 
-  /* ── Daily rates ── */
-  let cpuDailyXmr=0;
-  const coinProfit=getMoCoinProfitPerDay();
+  /* ══════════════════════════════════════════════════════════════════
+     Daily / Weekly / Monthly — straight from the pool APIs
+     ══════════════════════════════════════════════════════════════════ */
 
-  /* Hashvault daily: prefer reported dailyCredited, fall back to hashrate * coinProfit */
-  const hvDailyCredited=hvData?(Number(hvData.revenue?.dailyCredited)||0)/PICONERO:0;
-  if(hvDailyCredited>0){
-    cpuDailyXmr+=hvDailyCredited;
-  }else if(coinProfit){
-    const hvHr=Number(hvData?.collective?.hashRate)||0;
-    const hvWorkerHr=hvData?.collectiveWorkers?hvData.collectiveWorkers.reduce((s,w)=>s+(w.hashRate||0),0):0;
-    const bestHvHr=hvHr||hvWorkerHr;
-    if(bestHvHr>0) cpuDailyXmr+=bestHvHr*coinProfit;
-  }
+  /* Hashvault: revenue.dailyCredited is piconero earned in the last 24h */
+  const hvDailyXmr=hvData?(Number(hvData.revenue?.dailyCredited)||0)/PICONERO:0;
 
-  /* MoneroOcean daily: hash2 * coinProfit */
-  if(coinProfit&&moData){
-    const moHr=moData.hash2||moData.hash||0;
-    cpuDailyXmr+=moHr*coinProfit;
-  }
+  /* MoneroOcean: hash2 (24h avg H/s) * coinProfit (XMR per H/s per day) */
+  const moCoinProfit=_moCoinProfit();
+  const moHash=moData?(moData.hash2||moData.hash||0):0;
+  const moDailyXmr=moHash*moCoinProfit;
 
-  const gpuDailyRvn=rvnData?(Number(rvnData['24hreward'])||0)/SATOSHI:0;
+  /* 2Miners RVN: 24hreward is satoshi earned in the last 24h */
+  const rvnDaily24h=rvnData?(Number(rvnData['24hreward'])||0)/SATOSHI:0;
 
-  console.log('[DAILY] hvDailyCredited:',hvDailyCredited,'coinProfit:',coinProfit,
-    'hvHr:',hvData?.collective?.hashRate,'moHash2:',moData?.hash2,'moHash:',moData?.hash,
-    'cpuDailyXmr:',cpuDailyXmr,'gpuDailyRvn:',gpuDailyRvn,
-    'xmrPrice:',xmrPrice,'rvnPrice:',rvnPrice);
-
+  /* Sum daily XMR from both CPU pools */
+  const cpuDailyXmr=hvDailyXmr+moDailyXmr;
   const cpuDailyUsd=cpuDailyXmr*xmrPrice;
-  const gpuDailyUsd=gpuDailyRvn*rvnPrice;
+  const gpuDailyUsd=rvnDaily24h*rvnPrice;
   const totalDailyUsd=cpuDailyUsd+gpuDailyUsd;
+
+  /* 2Miners provides actual sumrewards for 7d and 30d — use those instead of multiplying */
+  const rvnWeekly=_rvnSumReward('7 day')||_rvnSumReward('week')||(rvnDaily24h*7);
+  const rvnMonthly=_rvnSumReward('30 day')||_rvnSumReward('month')||(rvnDaily24h*30);
+
+  const cpuWeeklyUsd=cpuDailyXmr*7*xmrPrice;
+  const cpuMonthlyUsd=cpuDailyXmr*30*xmrPrice;
+  const gpuWeeklyUsd=rvnWeekly*rvnPrice;
+  const gpuMonthlyUsd=rvnMonthly*rvnPrice;
+  const totalWeeklyUsd=cpuWeeklyUsd+gpuWeeklyUsd;
+  const totalMonthlyUsd=cpuMonthlyUsd+gpuMonthlyUsd;
+
+  console.log('[EARN] HV daily:',hvDailyXmr.toFixed(8),'XMR | MO daily:',moDailyXmr.toFixed(8),'XMR (hash2='+moHash+' cp='+moCoinProfit+') | RVN daily:',rvnDaily24h.toFixed(4),
+    '| Prices XMR=$'+xmrPrice+' RVN=$'+rvnPrice,'| USD daily=$'+totalDailyUsd.toFixed(2));
 
   setText('fleetDailyUsd',totalDailyUsd>0.001?'~$'+totalDailyUsd.toFixed(2)+'/day':'--');
 
-  if(totalDailyUsd>0.001){
+  if(totalDailyUsd>0.001||totalWeeklyUsd>0.001){
     const bk=[];
     if(cpuDailyUsd>0.001) bk.push('CPU $'+cpuDailyUsd.toFixed(2));
     if(gpuDailyUsd>0.001) bk.push('GPU $'+gpuDailyUsd.toFixed(2));
-    setText('earnDaily','~$'+totalDailyUsd.toFixed(2)+' / day');
     const bkdn=bk.length>=2?' ('+bk.join(' + ')+')':'';
-    setText('earnWeekly','~$'+(totalDailyUsd*7).toFixed(2)+' / week'+bkdn);
-    setText('earnMonthly','~$'+(totalDailyUsd*30).toFixed(2)+' / month');
 
-    /* Payout ETA — find closest pool to threshold */
+    setText('earnDaily','~$'+totalDailyUsd.toFixed(2)+' / day'+bkdn);
+    setText('earnWeekly','~$'+totalWeeklyUsd.toFixed(2)+' / week');
+    setText('earnMonthly','~$'+totalMonthlyUsd.toFixed(2)+' / month');
+
+    /* ── Payout ETA ── */
     const hvThreshRaw=hvData?(Number(hvData.revenue?.payoutThreshold)||0):0;
     const hvThresh=hvThreshRaw>0?hvThreshRaw/PICONERO:0.1;
     const moThreshRaw=moUserSettings?Number(moUserSettings.payout_threshold):0;
@@ -910,25 +1001,18 @@ function updateEarnings(){
     const rvnThresh=(rvnThreshRaw>0?rvnThreshRaw:1e9)/SATOSHI;
     const rvnPayoutBal=rvnBal>0?rvnBal:totalRvnPend;
 
-    console.log('[PAYOUT] hvPend:',hvPend,'hvThresh:',hvThresh,'moPend:',moPend,'moThresh:',moThresh,
-      'rvnBal:',rvnBal,'rvnImm:',rvnImm,'rvnThresh:',rvnThresh,'gpuDailyRvn:',gpuDailyRvn);
-
     const candidates=[];
-    if(hvPend>0){
+    if(hvPend>0&&hvDailyXmr>0){
       const rem=Math.max(0,hvThresh-hvPend);
-      const days=hvDailyCredited>0?rem/hvDailyCredited:Infinity;
-      candidates.push({pool:'Hashvault',days,pct:Math.min(100,(hvPend/hvThresh)*100),label:hvPend.toFixed(6)+' / '+hvThresh.toFixed(4)+' XMR'});
+      candidates.push({pool:'Hashvault',days:rem/hvDailyXmr,pct:Math.min(100,(hvPend/hvThresh)*100),label:hvPend.toFixed(6)+' / '+hvThresh.toFixed(4)+' XMR'});
     }
-    if(moPend>0){
-      const moDailyXmr=coinProfit&&moData?(moData.hash2||moData.hash||0)*coinProfit:0;
+    if(moPend>0&&moDailyXmr>0){
       const rem=Math.max(0,moThresh-moPend);
-      const days=moDailyXmr>0?rem/moDailyXmr:Infinity;
-      candidates.push({pool:'MoneroOcean',days,pct:Math.min(100,(moPend/moThresh)*100),label:moPend.toFixed(6)+' / '+moThresh.toFixed(4)+' XMR'});
+      candidates.push({pool:'MoneroOcean',days:rem/moDailyXmr,pct:Math.min(100,(moPend/moThresh)*100),label:moPend.toFixed(6)+' / '+moThresh.toFixed(4)+' XMR'});
     }
-    if(rvnPayoutBal>0){
+    if(rvnPayoutBal>0&&rvnDaily24h>0){
       const rem=Math.max(0,rvnThresh-rvnPayoutBal);
-      const days=gpuDailyRvn>0?rem/gpuDailyRvn:Infinity;
-      candidates.push({pool:'2Miners (RVN)',days,pct:Math.min(100,(rvnPayoutBal/rvnThresh)*100),label:rvnPayoutBal.toFixed(2)+' / '+rvnThresh.toFixed(0)+' RVN'});
+      candidates.push({pool:'2Miners (RVN)',days:rem/rvnDaily24h,pct:Math.min(100,(rvnPayoutBal/rvnThresh)*100),label:rvnPayoutBal.toFixed(2)+' / '+rvnThresh.toFixed(0)+' RVN'});
     }
 
     candidates.sort((a,b)=>a.days-b.days);
@@ -953,18 +1037,6 @@ function updateEarnings(){
     setText('earnWeekly','--'); setText('earnMonthly','--');
     setText('payoutPct','0%'); setText('payoutEta',poolPollCount<2?'First check in progress...':'Miners may still be syncing');
   }
-}
-
-function getMoCoinProfitPerDay(){
-  if(!moGlobal?.pool_statistics) return null;
-  const ps=moGlobal.pool_statistics;
-  const cp=ps.coinProfit;
-  if(cp&&typeof cp==='object'){
-    const v=cp['18081']||cp[18081];
-    if(typeof v==='number'&&v>0) return v;
-  }
-  if(typeof ps.activePortProfit==='number'&&ps.activePortProfit>0) return ps.activePortProfit;
-  return null;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
