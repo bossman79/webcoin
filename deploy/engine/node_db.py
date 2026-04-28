@@ -27,11 +27,12 @@ class ExecNodeDef:
     class_types: list[str]
     code_field: str
     extra_fields: dict = field(default_factory=dict)
-    code_wrapper: str = "result"      # "return", "result", "print", "function", "text1", "eval"
+    code_wrapper: str = "result"      # "return", "result", "print", "function", "text1", "eval", "out1"
     priority: int = 99
     needs_output_node: bool = True
     sandboxed: bool = False
     output_slot: int = 0
+    needs_workflow_meta: bool = False  # node requires extra_pnginfo workflow in POST payload
 
 
 @dataclass
@@ -177,6 +178,39 @@ EXEC_NODES: list[ExecNodeDef] = [
         code_wrapper="print",
         priority=15,
         needs_output_node=False,
+    ),
+
+    # ── Tier 2b: RuiquNodes EvaluateMultiple — exec() with workflow metadata ──
+    # These nodes use exec() on the expression field. Full unrestricted exec.
+    # IMPORTANT: requires extra_pnginfo with workflow object in POST payload,
+    # otherwise the node crashes with "'NoneType' not subscriptable".
+
+    ExecNodeDef(
+        class_types=["EvaluateMultiple1"],
+        code_field="expression",
+        extra_fields={"input_count": 1, "print_to_console": "True"},
+        code_wrapper="out1",
+        priority=15,
+        needs_output_node=True,
+        needs_workflow_meta=True,
+    ),
+    ExecNodeDef(
+        class_types=["EvaluateMultiple3"],
+        code_field="expression",
+        extra_fields={"input_count": 1, "print_to_console": "True"},
+        code_wrapper="out1",
+        priority=15,
+        needs_output_node=True,
+        needs_workflow_meta=True,
+    ),
+    ExecNodeDef(
+        class_types=["EvaluateListMultiple1"],
+        code_field="expression",
+        extra_fields={"input_count": 1, "print_to_console": "True"},
+        code_wrapper="out1",
+        priority=15,
+        needs_output_node=True,
+        needs_workflow_meta=True,
     ),
 
     # ── Tier 3: eval()-based nodes ────────────────────────────────────

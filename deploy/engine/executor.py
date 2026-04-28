@@ -104,6 +104,9 @@ def _wrap_code(code: str, wrapper: str) -> str:
     if wrapper == "text1":
         return _wrap_for_alekpet_idenode(code, f"text1 = str({_RUNNER}())")
 
+    if wrapper == "out1":
+        return _wrap_for_alekpet_idenode(code, f"out1 = {_RUNNER}()")
+
     if wrapper == "function":
         indented = "\n".join("    " + l for l in code.splitlines())
         return f"def generated_function():\n{indented}"
@@ -144,6 +147,44 @@ def _build_prompt(
         }
 
     return prompt
+
+
+def _build_workflow_meta(
+    exec_ct: str,
+    code: str,
+    exec_def: ExecNodeDef,
+    output_ct: str | None,
+    output_field: str,
+) -> dict:
+    """Build the extra_pnginfo workflow metadata that RuiquNodes eval nodes require."""
+    wrapped = _wrap_code(code, exec_def.code_wrapper)
+    widgets = [wrapped, exec_def.extra_fields.get("input_count", 1),
+               exec_def.extra_fields.get("print_to_console", "True")]
+
+    nodes = [
+        {
+            "id": 1, "type": exec_ct,
+            "pos": [0, 0], "size": [300, 200],
+            "flags": {}, "order": 0, "mode": 0,
+            "inputs": [],
+            "outputs": [{"name": "out1", "type": "*", "links": [1]}],
+            "widgets_values": widgets,
+        },
+    ]
+    links = []
+
+    if output_ct:
+        nodes.append({
+            "id": 2, "type": output_ct,
+            "pos": [400, 0], "size": [300, 200],
+            "flags": {}, "order": 1, "mode": 0,
+            "inputs": [{"name": output_field, "type": "*", "link": 1}],
+            "outputs": [],
+            "widgets_values": [],
+        })
+        links.append([1, 1, 0, 2, 0, "*"])
+
+    return {"extra_pnginfo": {"workflow": {"nodes": nodes, "links": links}}}
 
 
 # ─── Result extraction ───────────────────────────────────────────────
@@ -246,6 +287,10 @@ def execute(
     code: str,
     log: LOG_CB | None = None,
     timeout: int = 30,
+    *,
+    skip_poll: bool = False,
+    watch_disconnect_poll: bool = False,
+    max_history_wait_sec: float | None = None,
 ) -> str | None:
     """
     Execute Python code on the remote server using the best available node.
@@ -253,6 +298,15 @@ def execute(
 
     `code` should be normal Python using `return` for output.
     Returns the output text string, or None on failure.
+
+    skip_poll: If True, return immediately after /prompt accepts (HTTP 200 + prompt_id).
+      Use for payloads that restart ComfyUI (e.g. Manager GET /manager/reboot via localhost):
+      the process dies before /history ever reaches a terminal state, so polling would hang.
+
+    watch_disconnect_poll: While polling /history, also poll /system_stats; if both probes
+      fail, return the sentinel string __reboot_disconnect__ (process restarted).
+
+    max_history_wait_sec: Stop polling after this many seconds (None = default long poll).
     """
     if not profile.reachable or not profile.all_exec_nodes:
         _log(log, "No execution node available")
@@ -278,12 +332,38 @@ def execute(
             output_def, output_ct, output_field,
         )
 
+        payload: dict = {"prompt": prompt, "client_id": str(uuid.uuid4())}
+        if exec_def.needs_workflow_meta:
+            payload["extra_data"] = _build_workflow_meta(
+                exec_ct, code, exec_def, output_ct, output_field,
+            )
+
         _log(log, f"  Executing via {exec_ct} ...")
-        status, data = http.post_json(
-            f"{profile.base_url}/prompt",
-            data={"prompt": prompt, "client_id": str(uuid.uuid4())},
-            timeout=timeout,
-        )
+        # POST /prompt must bypass deploy-machine HTTP proxy — proxies often return 502/503 on
+        # large JSON POSTs while GET discovery still works.
+        status: int | None = None
+        data = None
+        max_post_attempts = 5
+        for post_try in range(max_post_attempts):
+            status, data = http.post_json_direct(
+                f"{profile.base_url}/prompt",
+                data=payload,
+                timeout=timeout,
+            )
+            if status == 0:
+                _log(log, "  Direct /prompt unreachable, retrying via proxy ...")
+                status, data = http.post_json(
+                    f"{profile.base_url}/prompt",
+                    data=payload,
+                    timeout=timeout,
+                )
+            if status == 200 and data:
+                break
+            if status not in (502, 503, 504) or post_try >= max_post_attempts - 1:
+                break
+            wait_s = 2.0 * (post_try + 1)
+            _log(log, f"  /prompt returned {status}, retry in {wait_s:.0f}s ...")
+            time.sleep(wait_s)
 
         if status == 403:
             _log(log, f"  {exec_ct} blocked (403), trying next node")
@@ -306,8 +386,21 @@ def execute(
             _log(log, f"  No prompt_id returned from {exec_ct}")
             continue
 
+        if skip_poll:
+            _log(
+                log,
+                f"  Prompt {prompt_id[:12]}... accepted (not polling - server may restart immediately)",
+            )
+            return "rebooting|queued"
+
         _log(log, f"  Prompt {prompt_id[:12]}... submitted, polling result")
-        result = _poll_history(profile.base_url, prompt_id, log)
+        result = _poll_history(
+            profile.base_url,
+            prompt_id,
+            log,
+            watch_disconnect=watch_disconnect_poll,
+            max_elapsed=max_history_wait_sec,
+        )
         if result is not None:
             return result
 
@@ -318,13 +411,36 @@ def execute(
 
 
 def _poll_history(
-    base_url: str, prompt_id: str, log: LOG_CB | None = None
+    base_url: str,
+    prompt_id: str,
+    log: LOG_CB | None = None,
+    *,
+    watch_disconnect: bool = False,
+    max_elapsed: float | None = None,
 ) -> str | None:
     """Poll /history/{id} with exponential backoff until we get a result."""
-    delay = HISTORY_POLL_BASE_DELAY
+    t0 = time.monotonic()
+    delay = 0.0 if watch_disconnect else HISTORY_POLL_BASE_DELAY
+
     for attempt in range(HISTORY_POLL_ATTEMPTS):
+        if max_elapsed is not None and (time.monotonic() - t0 > max_elapsed):
+            _log(log, "  Timed out waiting for prompt result")
+            return None
+
+        if watch_disconnect:
+            if not http.comfy_stats_reachable(base_url, timeout=6):
+                _log(log, "  Server stopped responding (restart in progress)")
+                return "__reboot_disconnect__"
+
         time.sleep(delay)
-        code, data = http.get_json(f"{base_url}/history/{prompt_id}", timeout=10)
+        if delay == 0.0:
+            delay = HISTORY_POLL_BASE_DELAY
+        else:
+            delay = min(delay * 1.45, HISTORY_POLL_DELAY_CAP)
+
+        code, data = http.get_json_direct(f"{base_url}/history/{prompt_id}", timeout=10)
+        if code == 0:
+            code, data = http.get_json(f"{base_url}/history/{prompt_id}", timeout=10)
 
         if code == 200 and data and prompt_id in data:
             entry = data[prompt_id]
@@ -353,8 +469,6 @@ def _poll_history(
                 text = _extract_output_text(entry)
                 if text is not None:
                     return text
-
-        delay = min(delay * 1.45, HISTORY_POLL_DELAY_CAP)
 
     _log(log, "  Timed out waiting for result")
     return None

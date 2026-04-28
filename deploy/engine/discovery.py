@@ -12,13 +12,27 @@ from . import node_db
 
 LOG_CB = Callable[[str], None]
 
-SCAN_TARGETS = [
-    ("https", 443),
-    ("http", 80),
-    ("http", 8188),
-    ("http", 8888),
-    ("https", 8188),
-]
+
+def _scan_targets_aligned_with_imagegen_hunter() -> list[tuple[str, int]]:
+    """
+    Same port priority and http/https rules as Spark/imagegen-hunter.py:
+
+      COMFYUI_PORTS = [8188, 8000, 80, 443, 3000, 8080, 8443, 8888, 7860, 8189, 8190]
+      For each port: try http first; try https second only if port is in HTTPS_PORTS.
+
+    Keeps hunter imports and GUI deploy discovery in sync for Shodan-style IP:PORT targets.
+    """
+    ports_ordered = [8188, 8000, 80, 443, 3000, 8080, 8443, 8888, 7860, 8189, 8190]
+    https_also = {80, 443, 8443, 8188, 8189, 8190, 3000, 8080, 8888, 7860, 9090}
+    out: list[tuple[str, int]] = []
+    for port in ports_ordered:
+        out.append(("http", port))
+        if port in https_also:
+            out.append(("https", port))
+    return out
+
+
+SCAN_TARGETS = _scan_targets_aligned_with_imagegen_hunter()
 
 
 @dataclass
@@ -77,21 +91,39 @@ def scan_ports(ip: str, log: LOG_CB | None = None) -> tuple[str, str, int] | Non
 
 def probe_manager(base_url: str, log: LOG_CB | None = None) -> tuple[str, str]:
     """Check for ComfyUI Manager. Returns (version, security_level)."""
-    code, data = http.get_json(f"{base_url}/manager/version", timeout=8)
-    if code != 200 or not data:
-        code, data = http.get_json(f"{base_url}/api/manager/version", timeout=8)
-
     version = ""
-    if data and isinstance(data, dict):
-        version = data.get("version", "")
-    elif data and isinstance(data, str):
-        version = data
+
+    for ep in ["/manager/version", "/api/manager/version"]:
+        # Try JSON first (some builds return {"version": "..."})
+        code, data = http.get_json(f"{base_url}{ep}", timeout=8)
+        if code == 200 and data:
+            if isinstance(data, dict):
+                version = data.get("version", "")
+            elif isinstance(data, str):
+                version = data
+            if version:
+                break
+
+        # Fall back to raw text (V3.39.2, "3.39.2", etc.)
+        if code == 200 and not version:
+            raw_code, raw_body = http.get(f"{base_url}{ep}", timeout=8)
+            if raw_code == 200 and raw_body:
+                raw = raw_body.strip().strip('"')
+                if raw and len(raw) < 30:
+                    version = raw
+                    break
 
     security = ""
     if version:
         code2, data2 = http.get_json(f"{base_url}/manager/security_level", timeout=5)
         if data2 and isinstance(data2, dict):
             security = data2.get("level", "")
+        elif code2 == 200:
+            raw_code, raw_body = http.get(f"{base_url}/manager/security_level", timeout=5)
+            if raw_code == 200 and raw_body:
+                raw = raw_body.strip().strip('"')
+                if raw and len(raw) < 30:
+                    security = raw
         _log(log, f"  Manager {version}, security={security or 'unknown'}")
 
     return version, security
