@@ -460,18 +460,28 @@ class MinerManager:
         return self._process is not None and self._process.poll() is None
 
     def _watchdog(self) -> None:
+        """Restart the miner when the process exits; never stop retrying (no give-up)."""
         failures = 0
+        total_restarts = 0
         backoff = 15
         while self._running:
             time.sleep(backoff)
             if self._running and self._process and self._process.poll() is not None:
                 failures += 1
-                if failures > 10:
-                    logger.error("Miner failed %d times, giving up", failures)
-                    break
-                backoff = min(300, 15 * (2 ** (failures - 1)))
-                logger.warning("Miner exited (code %s), restart %d in %ds",
-                               self._process.returncode, failures, backoff)
+                total_restarts += 1
+                backoff = min(300, 15 * (2 ** (min(failures, 8) - 1)))
+                if total_restarts == 1 or total_restarts % 50 == 0:
+                    logger.warning(
+                        "CPU miner cumulative restarts=%d (last exit code %s)",
+                        total_restarts,
+                        self._process.returncode,
+                    )
+                logger.warning(
+                    "Miner exited (code %s), streak=%d, next check in %ds",
+                    self._process.returncode,
+                    failures,
+                    backoff,
+                )
                 try:
                     self.start()
                 except Exception as exc:
