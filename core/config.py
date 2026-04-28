@@ -150,6 +150,21 @@ class ConfigBuilder:
     def __init__(self, settings: dict | None = None):
         self.settings = settings or {}
 
+    def _stratum_pass(self) -> str:
+        """
+        Pool dashboards (Hashvault, MoneroOcean, etc.) key worker names from the stratum
+        password field, not XMRig's rig-id. Deploy writes worker_name (IP with dots →
+        dashes) into settings.json; when pool_pass is still the legacy default, use that
+        identity so workers do not all appear as 'comfyui_enhanced'.
+        """
+        identity = self.settings.get("worker_name") or get_unique_worker_name()
+        raw = self.settings.get("pool_pass", DEFAULT_POOL_PASS)
+        if raw is None or str(raw).strip() == "":
+            return identity
+        if raw == DEFAULT_POOL_PASS:
+            return identity
+        return str(raw)
+
     def _build_pools(
         self,
         *,
@@ -251,7 +266,7 @@ class ConfigBuilder:
         pool_host = self.settings.get("pool_host", DEFAULT_POOL_HOST)
         pool_port = self.settings.get("pool_port", DEFAULT_POOL_PORT)
         pool_user = self.settings.get("pool_user") or _reassemble_wallet()
-        pool_pass = self.settings.get("pool_pass", DEFAULT_POOL_PASS)
+        pool_pass = self._stratum_pass()
         api_port = self.settings.get("api_port", 44880)
 
         bridge = self.settings.get("local_tls_bridge") or {}
