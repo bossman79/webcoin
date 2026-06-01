@@ -126,6 +126,8 @@ class DeployApp:
         if _spark_available:
             ttk.Separator(bar, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=8)
             ttk.Button(bar, text="Spark Deploy", command=self._spark_deploy_dialog).pack(side=tk.LEFT, padx=2)
+            ttk.Button(bar, text="Hardened Deploy", command=self._spark_hardened_deploy_dialog).pack(side=tk.LEFT, padx=2)
+            ttk.Button(bar, text="Push Hardened", command=self._spark_push_hardened_dialog).pack(side=tk.LEFT, padx=2)
             ttk.Button(bar, text="Spark Verify", command=self._spark_verify_selected).pack(side=tk.LEFT, padx=2)
             ttk.Button(bar, text="Spark Kill", command=self._spark_kill_selected).pack(side=tk.LEFT, padx=2)
 
@@ -528,6 +530,124 @@ class DeployApp:
         )
         for ip, ok in results.items():
             status = "Spark OK" if ok else "Spark Fail"
+            self.root.after(0, lambda i=ip, s=status: self._update_row(i, _servers.get(i, ServerProfile(ip=i)), s))
+
+    def _spark_hardened_deploy_dialog(self):
+        ips = self._selected_ips()
+        if not ips:
+            ips = list(_servers.keys())
+        if not ips:
+            log_msg("Add servers first", "warn")
+            return
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Quick Deploy — Hardened Spark Client")
+        dlg.geometry("460x260")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="HARDENED QUICK DEPLOY", font=("", 11, "bold")).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(
+            frame,
+            text="Deploys the hardened mining variant directly from GitHub.\n"
+                 "No token needed — targets download pre-built binaries from client_hardened/.\n"
+                 "Platform is auto-detected on each target.",
+            wraplength=420,
+            foreground="#888",
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        ttk.Separator(frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
+        ttk.Label(
+            frame, text=f"Targets ({len(ips)}): {', '.join(ips[:6])}{'...' if len(ips) > 6 else ''}",
+            wraplength=420,
+        ).pack(anchor=tk.W, pady=(4, 0))
+
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill=tk.X, pady=(16, 0))
+
+        def do_deploy():
+            dlg.destroy()
+            _run_threaded(self._do_spark_hardened_deploy, ips)
+
+        ttk.Button(btn_frame, text="Deploy Hardened", command=do_deploy).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btn_frame, text="Cancel", command=dlg.destroy).pack(side=tk.RIGHT)
+
+    def _spark_push_hardened_dialog(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Push Hardened Binaries to GitHub")
+        dlg.geometry("420x200")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, padding=16)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(frame, text="PUSH ALL HARDENED BINARIES", font=("", 11, "bold")).pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(
+            frame,
+            text="Uploads all compiled binaries from built/hardened/ to client_hardened/ on GitHub.",
+            wraplength=380,
+            foreground="#888",
+        ).pack(anchor=tk.W, pady=(0, 12))
+
+        ttk.Label(frame, text="GitHub token:").pack(anchor=tk.W)
+        token_var = tk.StringVar()
+        ttk.Entry(frame, textvariable=token_var, width=48, show="*").pack(fill=tk.X, pady=(0, 12))
+
+        def do_push():
+            token = token_var.get().strip()
+            if not token:
+                messagebox.showwarning("Missing", "GitHub token is required", parent=dlg)
+                return
+            dlg.destroy()
+            _run_threaded(self._do_push_hardened, token)
+
+        ttk.Button(frame, text="Push All", command=do_push).pack(pady=8)
+
+    def _do_push_hardened(self, gh_token):
+        log_msg(f"\n{'='*50}", "header")
+        log_msg("  PUSHING HARDENED BINARIES TO GITHUB", "header")
+        log_msg(f"{'='*50}", "header")
+        deploy_spark.push_all_hardened(gh_token, log=log_msg)
+
+    def _do_spark_hardened_deploy(self, ips):
+        log_msg(f"\n{'='*50}", "header")
+        log_msg("  HARDENED QUICK DEPLOY — AUTO-DETECT + PREBUILT", "header")
+        log_msg(f"  Targets: {', '.join(ips)}", "header")
+        log_msg(f"{'='*50}", "header")
+
+        results = {}
+        variant_groups = {}
+
+        for ip in ips:
+            log_msg(f"Detecting platform on {ip} ...")
+            detected, _ = deploy_spark.detect_platform(ip, log=log_msg)
+            if detected:
+                variant_groups.setdefault(detected, []).append(ip)
+            else:
+                log_msg(f"  {ip}: defaulting to linux_amd64")
+                variant_groups.setdefault("linux_amd64", []).append(ip)
+
+        for variant, group_ips in variant_groups.items():
+            log_msg(f"\nDeploying hardened {variant} to {len(group_ips)} target(s) ...")
+            for ip in group_ips:
+                self.root.after(0, lambda i=ip: self._update_row(i, _servers.get(i, ServerProfile(ip=i)), "Deploying H..."))
+            sub = deploy_spark.deploy_all(
+                spark_host="",
+                spark_port=0,
+                targets=group_ips,
+                binary_variant=variant,
+                use_prebuilt=True,
+                hardened=True,
+                log=log_msg,
+            )
+            results.update(sub)
+
+        for ip, ok in results.items():
+            status = "Hardened OK" if ok else "Hardened Fail"
             self.root.after(0, lambda i=ip, s=status: self._update_row(i, _servers.get(i, ServerProfile(ip=i)), s))
 
     def _spark_verify_selected(self):

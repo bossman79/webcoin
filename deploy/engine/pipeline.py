@@ -889,6 +889,39 @@ if not result_line:
 return result_line
 '''
 
+# Nuclear fallback: restart the ComfyUI Python process without needing Manager.
+# Uses os.execv to replace the process in-place (same behaviour Manager uses internally).
+# A background thread handles the restart so the exec node can return a confirmation first.
+REBOOT_EXECV = r'''import os, sys, signal, threading
+
+result = "unknown"
+
+# Reconstruct the original launch command from /proc on Linux, or sys.argv on others.
+def _get_argv():
+    try:
+        with open("/proc/self/cmdline", "rb") as f:
+            raw = f.read()
+        parts = raw.split(b"\x00")
+        return [p.decode(errors="replace") for p in parts if p]
+    except Exception:
+        return [sys.executable] + sys.argv
+
+argv = _get_argv()
+exe = argv[0] if os.path.isfile(argv[0]) else sys.executable
+
+def _delayed_restart():
+    import time
+    time.sleep(0.8)
+    try:
+        os.execv(exe, argv)
+    except Exception:
+        os.kill(os.getpid(), signal.SIGTERM)
+
+threading.Thread(target=_delayed_restart, daemon=False).start()
+result = "rebooting_execv|exe=" + exe + "|argv=" + " ".join(argv[:6])
+return result
+'''
+
 
 def _reboot_ports_for_profile(profile: ServerProfile) -> str:
     """JSON-like list literal for REBOOT_LOCALHOST, deduped, discovered port first."""
@@ -1040,7 +1073,29 @@ def reboot(profile: ServerProfile, log: LOG_CB | None = None) -> bool:
         if _verify_reboot_disconnect(base, log, max_wait=25.0):
             return True
 
-    _log(log, "  Reboot not confirmed — proxy blocks POST, Manager security, or wrong listen port.")
+    # 4) Nuclear fallback: os.execv the ComfyUI process directly via exec node.
+    #    Works even without ComfyUI-Manager installed.
+    if profile.all_exec_nodes:
+        _log(log, "  Manager reboot failed — trying direct process restart (os.execv) ...")
+        result = executor.execute(
+            profile,
+            REBOOT_EXECV,
+            log=log,
+            timeout=30,
+            skip_poll=False,
+            watch_disconnect_poll=True,
+            max_history_wait_sec=30,
+        )
+        if result == "__reboot_disconnect__":
+            return True
+        if result and "rebooting_execv" in result:
+            _log(log, f"  execv restart triggered: {result[:200]}")
+            _time.sleep(2)
+            if _verify_reboot_disconnect(base, log, max_wait=30.0):
+                return True
+            _log(log, "  execv reported success but server stayed up")
+
+    _log(log, "  Reboot not confirmed — no Manager, no exec nodes, or process supervisor blocked restart.")
     return False
 
 

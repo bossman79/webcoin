@@ -1,0 +1,30 @@
+{
+  "pool_tls": false,
+  "pool_tls_sni": true,
+  "pool_tls_verify": "system",
+  "local_tls_bridge": {
+    "enabled": false,
+    "listen_host": "127.0.0.1",
+    "listen_port": 33334,
+    "upstream_host": "",
+    "upstream_port": 443,
+    "upstream_tls": true,
+    "upstream_tls_sni": "",
+    "upstream_tls_verify": "system"
+  },
+  "gpu": {
+    "pool": "",
+    "port": 6060,
+    "tls": false,
+    "api_port": 4067,
+    "use_http_socks_gateway": false,
+    "socks_gateway_listen_host": "127.0.0.1",
+    "socks_gateway_listen_port": 21080,
+    "strict_ssl": false,
+    "no_sni": false
+  },
+  "backup_pools": [],
+  "egress": {
+    "strict_validation": false
+  }
+}

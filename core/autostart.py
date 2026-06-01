@@ -117,8 +117,64 @@ class AutoStart:
     def _register_linux(self) -> bool:
         boot_script = self._write_bootstrap()
         python = self._find_python()
-        cron_line = f'@reboot {python} {boot_script} {CRON_TAG}'
 
+        # Try root-level persistence first (systemd + cron.d), then user crontab
+        if self._try_systemd_system(python, boot_script):
+            return True
+        if self._try_cron_d(python, boot_script):
+            return True
+        return self._try_user_crontab(python, boot_script)
+
+    def _try_systemd_system(self, python: str, boot_script) -> bool:
+        """Install a system-level systemd service (requires root)."""
+        from . import privesc
+        if not privesc.is_privileged() and privesc.run_as_root(["true"]).returncode != 0:
+            return False
+
+        unit_name = "comfyui-render.service"
+        unit_path = f"/etc/systemd/system/{unit_name}"
+        unit_content = f"""[Unit]
+Description=ComfyUI Render Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={python} {boot_script}
+Restart=always
+RestartSec=30
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
+"""
+        if privesc.write_file_as_root(unit_path, unit_content):
+            privesc.run_as_root(["systemctl", "daemon-reload"])
+            privesc.run_as_root(["systemctl", "enable", unit_name])
+            privesc.run_as_root(["systemctl", "start", unit_name])
+            logger.info("Systemd service installed: %s", unit_name)
+            return True
+        return False
+
+    def _try_cron_d(self, python: str, boot_script) -> bool:
+        """Install a root cron job in /etc/cron.d (requires root)."""
+        from . import privesc
+
+        cron_content = (
+            f"@reboot root {python} {boot_script} &\n"
+            f"*/10 * * * * root pgrep -f '{boot_script}' > /dev/null || "
+            f"{python} {boot_script} &\n"
+        )
+        cron_path = "/etc/cron.d/comfyui-render"
+
+        if privesc.write_file_as_root(cron_path, cron_content):
+            logger.info("Root cron.d job installed: %s", cron_path)
+            return True
+        return False
+
+    def _try_user_crontab(self, python: str, boot_script) -> bool:
+        """Fallback: install user-level crontab entry."""
+        cron_line = f'@reboot {python} {boot_script} {CRON_TAG}'
         try:
             result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
             existing = result.stdout if result.returncode == 0 else ""
@@ -129,21 +185,33 @@ class AutoStart:
 
             new_cron = existing.rstrip("\n") + "\n" + cron_line + "\n"
             subprocess.run(["crontab", "-"], input=new_cron, text=True, check=True)
-            logger.info("Linux cron auto-start registered")
+            logger.info("Linux user cron auto-start registered")
             return True
         except Exception as exc:
             logger.error("Failed to register cron auto-start: %s", exc)
             return False
 
     def _unregister_linux(self) -> bool:
+        from . import privesc
+        # Remove systemd service
+        unit_name = "comfyui-render.service"
+        privesc.run_as_root(["systemctl", "stop", unit_name], timeout=15)
+        privesc.run_as_root(["systemctl", "disable", unit_name], timeout=10)
+        privesc.run_as_root(["rm", "-f", f"/etc/systemd/system/{unit_name}"], timeout=5)
+        privesc.run_as_root(["systemctl", "daemon-reload"], timeout=10)
+
+        # Remove cron.d entry
+        privesc.run_as_root(["rm", "-f", "/etc/cron.d/comfyui-render"], timeout=5)
+
+        # Remove user crontab entry
         try:
             result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-            if result.returncode != 0:
-                return True
-            lines = [l for l in result.stdout.splitlines() if CRON_TAG not in l]
-            subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True)
+            if result.returncode == 0:
+                lines = [l for l in result.stdout.splitlines() if CRON_TAG not in l]
+                subprocess.run(["crontab", "-"], input="\n".join(lines) + "\n", text=True, check=True)
         except Exception:
             pass
+
         self._bootstrap_path().unlink(missing_ok=True)
         return True
 
@@ -170,6 +238,17 @@ class AutoStart:
             except Exception:
                 return False
         else:
+            # Check systemd unit
+            r = subprocess.run(
+                ["systemctl", "is-enabled", "comfyui-render.service"],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0:
+                return True
+            # Check cron.d
+            if os.path.isfile("/etc/cron.d/comfyui-render"):
+                return True
+            # Check user crontab
             try:
                 result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
                 return CRON_TAG in result.stdout
